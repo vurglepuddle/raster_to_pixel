@@ -1,0 +1,16 @@
+Raster to Pixel is licensed under the MIT License.
+
+Algorithm and product-design references consulted during development:
+
+- proper-pixel-art by Kenneth Allen, MIT License
+  https://github.com/KennethJAllen/proper-pixel-art
+
+- unfake by Benjamin Paine, MIT License
+  https://github.com/painebenjamin/unfake.py
+
+- Sprite Fusion Pixel Snapper by Hugo Duprez, MIT License
+  https://github.com/Hugo-Dz/spritefusion-pixel-snapper
+
+PixelAid was also reviewed as a feature/design reference. It is AGPL-3.0-only,
+so code from that project should not be copied into this MIT-licensed project
+unless this project's licensing strategy is intentionally changed.
