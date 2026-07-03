@@ -1,11 +1,13 @@
-use std::{error::Error, path::PathBuf};
+use std::{error::Error, fs, path::PathBuf};
 
 use clap::{Parser, ValueEnum};
-use image::{ImageReader, Rgba, RgbaImage};
+use image::{imageops::FilterType, ImageReader, Rgba, RgbaImage};
 use raster_to_pixel::{
-    color::{linear_to_oklab, linear_to_srgb, oklab_to_srgb8},
+    color::{linear_to_oklab, linear_to_srgb, oklab_to_srgb8, srgb8_to_oklab},
+    dither::ordered_dither,
     downsample::{downsample, CellMode},
     kmeans::{build_palette, nearest},
+    palettes,
 };
 
 #[derive(Debug, Parser)]
@@ -32,6 +34,18 @@ struct Args {
     #[arg(long, default_value_t = 16)]
     colors: usize,
 
+    /// Built-in palette name (pico8, gameboy, sweetie16) or Lospec hex file path.
+    #[arg(long)]
+    palette: Option<String>,
+
+    /// Ordered dithering mode.
+    #[arg(long, value_enum, default_value_t = DitherArg::None)]
+    dither: DitherArg,
+
+    /// Dither strength, 0.0..1.0.
+    #[arg(long, default_value_t = 0.35)]
+    dither_strength: f32,
+
     /// Nearest-neighbor preview scale. 1 writes the raw pixel grid.
     #[arg(long, default_value_t = 1)]
     scale: u32,
@@ -43,6 +57,10 @@ struct Args {
     /// Cell reduction mode used during downsampling.
     #[arg(long, value_enum, default_value_t = CellModeArg::Detail)]
     cell: CellModeArg,
+
+    /// Write an original/result side-by-side comparison sheet.
+    #[arg(long)]
+    compare: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -51,6 +69,13 @@ enum CellModeArg {
     Median,
     Detail,
     Dominant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DitherArg {
+    None,
+    Bayer4,
+    Bayer8,
 }
 
 impl From<CellModeArg> for CellMode {
@@ -71,6 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let src = ImageReader::open(&args.input)?.decode()?.to_rgba8();
     let (src_w, src_h) = src.dimensions();
     let (dst_w, dst_h) = target_grid(src_w, src_h, &args);
+    let fixed_palette = load_fixed_palette(&args.palette)?;
 
     if args.pixel_size.is_none() && args.size > src_w.max(src_h) {
         eprintln!(
@@ -91,11 +117,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         dst_h as usize,
         args.cell.into(),
     );
-    let pixel_art = quantize_to_rgba8(&small, dst_w, dst_h, args.colors, args.alpha_threshold);
-    let output = if args.scale == 1 {
+    let quantize = QuantizeOptions {
+        colors: args.colors,
+        alpha_threshold: args.alpha_threshold,
+        fixed_palette: fixed_palette.as_deref(),
+        dither: args.dither,
+        dither_strength: args.dither_strength,
+    };
+    let (pixel_art, palette_len) = quantize_to_rgba8(&small, dst_w, dst_h, quantize);
+    let result = if args.scale == 1 {
         pixel_art
     } else {
         scale_nearest(&pixel_art, args.scale)
+    };
+    let output = if args.compare {
+        compare_sheet(&src, &result)
+    } else {
+        result
     };
 
     output.save(&args.output)?;
@@ -104,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.output.display(),
         output.width(),
         output.height(),
-        args.colors,
+        palette_len,
         args.scale
     );
     Ok(())
@@ -122,10 +160,35 @@ fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
     if !(1..=256).contains(&args.colors) {
         return Err("--colors must be in 1..=256".into());
     }
+    if !(0.0..=1.0).contains(&args.dither_strength) || !args.dither_strength.is_finite() {
+        return Err("--dither-strength must be a finite number in 0.0..=1.0".into());
+    }
     if args.scale == 0 {
         return Err("--scale must be at least 1".into());
     }
     Ok(())
+}
+
+fn load_fixed_palette(choice: &Option<String>) -> Result<Option<Vec<[f32; 3]>>, Box<dyn Error>> {
+    let Some(choice) = choice else {
+        return Ok(None);
+    };
+
+    let palette = if let Some(builtin) = palettes::builtin(choice) {
+        builtin.to_vec()
+    } else {
+        let text = fs::read_to_string(choice)
+            .map_err(|e| format!("failed to read palette {choice:?}: {e}"))?;
+        palettes::parse_hex_list(&text)
+            .map_err(|e| format!("failed to parse palette {choice:?}: {e}"))?
+    };
+
+    Ok(Some(
+        palette
+            .into_iter()
+            .map(|[r, g, b]| srgb8_to_oklab(r, g, b))
+            .collect(),
+    ))
 }
 
 fn target_grid(src_w: u32, src_h: u32, args: &Args) -> (u32, u32) {
@@ -165,14 +228,22 @@ fn rgba8_to_linear(src: &RgbaImage) -> Vec<f32> {
     out
 }
 
+#[derive(Clone, Copy)]
+struct QuantizeOptions<'a> {
+    colors: usize,
+    alpha_threshold: u8,
+    fixed_palette: Option<&'a [[f32; 3]]>,
+    dither: DitherArg,
+    dither_strength: f32,
+}
+
 fn quantize_to_rgba8(
     linear_rgba: &[f32],
     width: u32,
     height: u32,
-    colors: usize,
-    alpha_threshold: u8,
-) -> RgbaImage {
-    let threshold = alpha_threshold as f32 / 255.0;
+    options: QuantizeOptions<'_>,
+) -> (RgbaImage, usize) {
+    let threshold = options.alpha_threshold as f32 / 255.0;
     let mut samples = Vec::new();
     for px in linear_rgba.chunks_exact(4) {
         if px[3] >= threshold {
@@ -181,25 +252,49 @@ fn quantize_to_rgba8(
     }
 
     if samples.is_empty() {
-        return RgbaImage::new(width, height);
+        return (RgbaImage::new(width, height), 0);
     }
 
-    let palette = build_palette(&samples, colors.min(samples.len()), 32);
+    let palette = options
+        .fixed_palette
+        .map(|palette| palette.to_vec())
+        .unwrap_or_else(|| build_palette(&samples, options.colors.min(samples.len()), 32));
     let palette_srgb: Vec<[u8; 3]> = palette.iter().map(|&lab| oklab_to_srgb8(lab)).collect();
+    let labs: Vec<[f32; 3]> = linear_rgba
+        .chunks_exact(4)
+        .map(|px| linear_to_oklab(px[0], px[1], px[2]))
+        .collect();
+    let dithered = match options.dither {
+        DitherArg::None => None,
+        DitherArg::Bayer4 | DitherArg::Bayer8 => Some(ordered_dither(
+            &labs,
+            width as usize,
+            &palette,
+            options.dither_strength,
+            0.08,
+            options.dither == DitherArg::Bayer8,
+        )),
+    };
     let mut out = RgbaImage::new(width, height);
 
-    for (dst, px) in out.pixels_mut().zip(linear_rgba.chunks_exact(4)) {
+    for (i, (dst, px)) in out
+        .pixels_mut()
+        .zip(linear_rgba.chunks_exact(4))
+        .enumerate()
+    {
         if px[3] < threshold {
             *dst = Rgba([0, 0, 0, 0]);
             continue;
         }
-        let lab = linear_to_oklab(px[0], px[1], px[2]);
-        let idx = nearest(&palette, lab);
+        let idx = dithered
+            .as_ref()
+            .map(|indices| indices[i] as usize)
+            .unwrap_or_else(|| nearest(&palette, labs[i]));
         let [r, g, b] = palette_srgb[idx];
         *dst = Rgba([r, g, b, 255]);
     }
 
-    out
+    (out, palette.len())
 }
 
 fn scale_nearest(src: &RgbaImage, scale: u32) -> RgbaImage {
@@ -211,6 +306,28 @@ fn scale_nearest(src: &RgbaImage, scale: u32) -> RgbaImage {
         }
     }
     out
+}
+
+fn compare_sheet(original: &RgbaImage, result: &RgbaImage) -> RgbaImage {
+    let h = result.height().max(1);
+    let w = ((original.width() as f64 * h as f64 / original.height() as f64).round() as u32).max(1);
+    let original_resized = image::imageops::resize(original, w, h, FilterType::Triangle);
+    let gap = 4;
+    let mut sheet = RgbaImage::new(w + gap + result.width(), h);
+
+    for (x, y, p) in original_resized.enumerate_pixels() {
+        sheet.put_pixel(x, y, *p);
+    }
+    for x in w..w + gap {
+        for y in 0..h {
+            sheet.put_pixel(x, y, Rgba([24, 24, 24, 255]));
+        }
+    }
+    for (x, y, p) in result.enumerate_pixels() {
+        sheet.put_pixel(w + gap + x, y, *p);
+    }
+
+    sheet
 }
 
 #[allow(dead_code)]
