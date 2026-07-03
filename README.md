@@ -2,6 +2,8 @@
 
 Rust CLI for converting fuzzy raster images into deliberate pixel-art PNGs.
 
+Licensed under MIT. See `LICENSE` and `NOTICE`.
+
 ## Quick Start
 
 ```cmd
