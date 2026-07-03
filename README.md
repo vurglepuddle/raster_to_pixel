@@ -10,6 +10,12 @@ Licensed under MIT. See `LICENSE` and `NOTICE`.
 cargo run -- input.png output.png --pixel-size 5 --colors 16 --scale 8
 ```
 
+Auto pixel-size:
+
+```cmd
+cargo run -- input.png output.png --auto-pixel-size --colors 16 --scale 8
+```
+
 Fixed palette:
 
 ```cmd
@@ -26,6 +32,7 @@ Useful knobs:
 
 ```cmd
 --pixel-size 5      :: estimated source pixels per output pixel
+--auto-pixel-size   :: estimate source pixels per output pixel from image structure
 --size 64           :: target long side, ignored when --pixel-size is set
 --colors 16         :: adaptive palette size
 --palette pico8     :: built-in palette: pico8, gameboy, sweetie16
