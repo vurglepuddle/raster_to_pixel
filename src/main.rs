@@ -1,7 +1,11 @@
-use std::{error::Error, fs, path::PathBuf};
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use clap::{Parser, ValueEnum};
-use image::ImageReader;
+use image::{ImageReader, Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
     downsample::CellMode,
@@ -23,7 +27,7 @@ struct Args {
     /// Input image path.
     input: PathBuf,
 
-    /// Output image path. Use .png for now.
+    /// Output image path, or output directory when input is a directory.
     output: PathBuf,
 
     /// Long side of the pixel-art result.
@@ -137,6 +141,10 @@ struct Args {
     /// Write the source with the sampling grid drawn on it to this path.
     #[arg(long)]
     debug_grid: Option<PathBuf>,
+
+    /// Write the resulting palette (.hex, .gpl, or .png strip). In batch mode this is a directory.
+    #[arg(long)]
+    palette_out: Option<PathBuf>,
 
     /// Write an original/result side-by-side comparison sheet.
     #[arg(long)]
@@ -263,9 +271,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     validate_args(&args)?;
 
+    let cfg = build_config(&args)?;
+    if args.input.is_dir() {
+        return run_batch(&args, &cfg);
+    }
+
     let src = ImageReader::open(&args.input)?.decode()?.to_rgba8();
     let (src_w, src_h) = src.dimensions();
-    let cfg = build_config(&args)?;
 
     let result = pipeline::convert(&src, &cfg)?;
 
@@ -323,6 +335,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         pipeline::debug_grid_image(&src, &cfg)?.save(path)?;
         eprintln!("wrote grid debug image {}", path.display());
     }
+    if let Some(path) = &args.palette_out {
+        write_palette_file(path, &result.palette)?;
+        eprintln!("wrote palette {}", path.display());
+    }
 
     result.image.save(&args.output)?;
     eprintln!(
@@ -334,6 +350,162 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.scale
     );
     Ok(())
+}
+
+fn run_batch(args: &Args, cfg: &Config) -> Result<(), Box<dyn Error>> {
+    if args.output.exists() && !args.output.is_dir() {
+        return Err("directory input requires an output directory".into());
+    }
+    fs::create_dir_all(&args.output)?;
+    let palette_dir = prepare_batch_sidecar_dir(args.palette_out.as_deref(), "--palette-out")?;
+    let debug_json_dir = prepare_batch_sidecar_dir(args.debug_json.as_deref(), "--debug-json")?;
+    let debug_grid_dir = prepare_batch_sidecar_dir(args.debug_grid.as_deref(), "--debug-grid")?;
+
+    let mut inputs = Vec::new();
+    for entry in fs::read_dir(&args.input)? {
+        let path = entry?.path();
+        if path.is_file() && is_supported_image_path(&path) {
+            inputs.push(path);
+        }
+    }
+    inputs.sort_by_key(|p| p.file_name().map(|s| s.to_os_string()));
+    if inputs.is_empty() {
+        return Err(format!("no supported images found in {}", args.input.display()).into());
+    }
+
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    for input in inputs {
+        match convert_batch_file(
+            &input,
+            &args.output,
+            palette_dir,
+            debug_json_dir,
+            debug_grid_dir,
+            cfg,
+        ) {
+            Ok(out_path) => {
+                ok += 1;
+                eprintln!("wrote {}", out_path.display());
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("failed {}: {e}", input.display());
+            }
+        }
+    }
+
+    eprintln!("batch complete: {ok} written, {failed} failed");
+    if failed > 0 {
+        return Err(format!("batch failed on {failed} image(s)").into());
+    }
+    Ok(())
+}
+
+fn convert_batch_file(
+    input: &Path,
+    output_dir: &Path,
+    palette_dir: Option<&Path>,
+    debug_json_dir: Option<&Path>,
+    debug_grid_dir: Option<&Path>,
+    cfg: &Config,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let src = ImageReader::open(input)?.decode()?.to_rgba8();
+    let result = pipeline::convert(&src, cfg)?;
+    let out_path = sidecar_path(output_dir, input, "", "png")?;
+    result.image.save(&out_path)?;
+    if let Some(dir) = palette_dir {
+        write_palette_file(&sidecar_path(dir, input, "", "hex")?, &result.palette)?;
+    }
+    if let Some(dir) = debug_json_dir {
+        fs::write(
+            sidecar_path(dir, input, "", "json")?,
+            result.diagnostics_json(cfg),
+        )?;
+    }
+    if let Some(dir) = debug_grid_dir {
+        pipeline::debug_grid_image(&src, cfg)?.save(sidecar_path(dir, input, "_grid", "png")?)?;
+    }
+    Ok(out_path)
+}
+
+fn prepare_batch_sidecar_dir<'a>(
+    path: Option<&'a Path>,
+    flag_name: &str,
+) -> Result<Option<&'a Path>, Box<dyn Error>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if path.extension().is_some() {
+        return Err(format!("{flag_name} must be a directory in batch mode").into());
+    }
+    fs::create_dir_all(path)?;
+    Ok(Some(path))
+}
+
+fn sidecar_path(
+    dir: &Path,
+    input: &Path,
+    suffix: &str,
+    ext: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let stem = input
+        .file_stem()
+        .ok_or_else(|| format!("input path has no file stem: {}", input.display()))?;
+    let mut name = stem.to_os_string();
+    name.push(suffix);
+    let mut path = dir.join(name);
+    path.set_extension(ext);
+    Ok(path)
+}
+
+fn is_supported_image_path(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff")
+    )
+}
+
+fn write_palette_file(path: &Path, palette: &[[u8; 3]]) -> Result<(), Box<dyn Error>> {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("hex")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "gpl" => {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Pixeline");
+            fs::write(path, palettes::format_gpl(palette, name))?;
+        }
+        "png" => {
+            palette_strip_image(palette).save(path)?;
+        }
+        "hex" | "txt" => {
+            fs::write(path, palettes::format_hex_list(palette))?;
+        }
+        ext => {
+            return Err(format!(
+                "unsupported palette output extension .{ext}; use .hex, .gpl, or .png"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn palette_strip_image(palette: &[[u8; 3]]) -> RgbaImage {
+    let width = palette.len().max(1) as u32;
+    let mut img = RgbaImage::new(width, 1);
+    for (x, [r, g, b]) in palette.iter().enumerate() {
+        img.put_pixel(x as u32, 0, Rgba([*r, *g, *b, 255]));
+    }
+    img
 }
 
 fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
@@ -374,6 +546,9 @@ fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
     }
     if args.contrast_expansion > 4 {
         return Err("--contrast-expansion must be in 0..=4".into());
+    }
+    if args.input.is_dir() && args.output.exists() && !args.output.is_dir() {
+        return Err("directory input requires an output directory".into());
     }
     Ok(())
 }

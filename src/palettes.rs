@@ -1,5 +1,7 @@
-//! Built-in palettes + Lospec-style hex list parsing ("RRGGBB" or "#RRGGBB",
-//! one per line, blank lines and ';' / '//' comments ignored).
+//! Built-in palettes + palette text parsing/export.
+//!
+//! Accepted text formats are Lospec-style hex lists ("RRGGBB" or "#RRGGBB",
+//! one per line) and GIMP `.gpl` palettes (`R G B name` rows).
 
 /// Game Boy DMG 4-shade green, dark -> light.
 pub const GAMEBOY: &[[u8; 3]] = &[
@@ -61,15 +63,40 @@ pub fn builtin(name: &str) -> Option<&'static [[u8; 3]]> {
 
 /// Parse a Lospec-style hex palette file body.
 pub fn parse_hex_list(text: &str) -> Result<Vec<[u8; 3]>, String> {
+    parse_palette_list(text)
+}
+
+/// Parse a Lospec hex list or GIMP `.gpl` palette body.
+pub fn parse_palette_list(text: &str) -> Result<Vec<[u8; 3]>, String> {
     let mut out = Vec::new();
     for (i, raw) in text.lines().enumerate() {
-        let line = raw.trim();
-        let line = line.strip_prefix('#').unwrap_or(line);
-        if line.is_empty() || line.starts_with(';') || line.starts_with("//") {
+        let mut line = raw.trim();
+        if line.is_empty()
+            || line.starts_with(';')
+            || line.starts_with("//")
+            || line.eq_ignore_ascii_case("GIMP Palette")
+            || line.starts_with("Name:")
+            || line.starts_with("Columns:")
+        {
             continue;
         }
+        if let Some(rest) = line.strip_prefix('#') {
+            let rest = rest.trim();
+            if rest.len() == 6 && rest.bytes().all(|b| b.is_ascii_hexdigit()) {
+                line = rest;
+            } else {
+                continue;
+            }
+        }
         if line.len() != 6 || !line.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(format!("line {}: expected RRGGBB, got {raw:?}", i + 1));
+            if let Some(rgb) = parse_gpl_color_row(line) {
+                out.push(rgb);
+                continue;
+            }
+            return Err(format!(
+                "line {}: expected RRGGBB or GIMP RGB row, got {raw:?}",
+                i + 1
+            ));
         }
         let v = u32::from_str_radix(line, 16).unwrap();
         out.push([(v >> 16) as u8, (v >> 8) as u8, v as u8]);
@@ -78,6 +105,35 @@ pub fn parse_hex_list(text: &str) -> Result<Vec<[u8; 3]>, String> {
         return Err("palette file contained no colors".into());
     }
     Ok(out)
+}
+
+fn parse_gpl_color_row(line: &str) -> Option<[u8; 3]> {
+    let mut parts = line.split_whitespace();
+    let r = parts.next()?.parse::<u16>().ok()?;
+    let g = parts.next()?.parse::<u16>().ok()?;
+    let b = parts.next()?.parse::<u16>().ok()?;
+    if r > 255 || g > 255 || b > 255 {
+        return None;
+    }
+    Some([r as u8, g as u8, b as u8])
+}
+
+/// Format a palette as one lowercase RRGGBB entry per line.
+pub fn format_hex_list(palette: &[[u8; 3]]) -> String {
+    let mut out = String::new();
+    for [r, g, b] in palette {
+        out.push_str(&format!("{r:02x}{g:02x}{b:02x}\n"));
+    }
+    out
+}
+
+/// Format a palette as a GIMP `.gpl` file.
+pub fn format_gpl(palette: &[[u8; 3]], name: &str) -> String {
+    let mut out = format!("GIMP Palette\nName: {name}\nColumns: 16\n#\n");
+    for (i, [r, g, b]) in palette.iter().enumerate() {
+        out.push_str(&format!("{r:3} {g:3} {b:3}\tColor {i}\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -99,5 +155,23 @@ mod tests {
         assert_eq!(p, vec![[0x1a, 0x1c, 0x2c], [0xff, 0xcc, 0xaa]]);
         assert!(parse_hex_list("xyz").is_err());
         assert!(parse_hex_list("; only comments\n").is_err());
+    }
+
+    #[test]
+    fn parses_gimp_palette_rows() {
+        let p = parse_palette_list(
+            "GIMP Palette\nName: Demo\nColumns: 2\n# comment\n  26  28  44\tink\n255 204 170 skin\n",
+        )
+        .unwrap();
+        assert_eq!(p, vec![[26, 28, 44], [255, 204, 170]]);
+    }
+
+    #[test]
+    fn exports_hex_and_gpl_text() {
+        let palette = [[0x1a, 0x1c, 0x2c], [0xff, 0xcc, 0xaa]];
+        assert_eq!(format_hex_list(&palette), "1a1c2c\nffccaa\n");
+        let gpl = format_gpl(&palette, "Demo");
+        assert!(gpl.starts_with("GIMP Palette\nName: Demo\n"));
+        assert!(gpl.contains(" 26  28  44\tColor 0"));
     }
 }

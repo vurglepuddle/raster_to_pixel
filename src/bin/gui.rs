@@ -9,6 +9,7 @@
 //!   POST /api/session    -> raw image bytes; caches the source, returns JSON metadata
 //!   POST /api/preview    -> form-urlencoded settings; PNG of the raw grid (scale=1, no compare)
 //!   POST /api/export     -> form-urlencoded settings; PNG with real scale + compare (download)
+//!   POST /api/palette    -> form-urlencoded settings; resulting palette download
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -17,12 +18,13 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use image::{ImageFormat, RgbaImage};
+use image::{ImageFormat, Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
     downsample::CellMode,
     morphology::CleanupPreset,
     outline::OutlineMode,
+    palettes,
     pipeline::{
         self, Config, Dither, PaletteChoice, Quantizer, DEFAULT_BG_TOLERANCE,
         DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
@@ -195,6 +197,7 @@ fn route(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
         ("POST", "/api/session") => handle_session(req, stream),
         ("POST", "/api/preview") => handle_convert(req, stream, true),
         ("POST", "/api/export") => handle_convert(req, stream, false),
+        ("POST", "/api/palette") => handle_palette(req, stream),
         _ => send(stream, "404 Not Found", "text/plain", &[], b"not found"),
     }
 }
@@ -287,6 +290,84 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
 }
 
 // ── settings mapping ────────────────────────────────────────────────────────
+
+fn handle_palette(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
+    let form = parse_form(std::str::from_utf8(&req.body).unwrap_or(""));
+    let cfg = config_from_form(&form, true);
+    let format = form
+        .get("paletteFormat")
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "hex".to_string());
+
+    let Some(src) = SESSION.lock().unwrap().clone() else {
+        return send_error(
+            stream,
+            "409 Conflict",
+            "no image loaded; POST /api/session first",
+        );
+    };
+
+    let result = match pipeline::convert(&src, &cfg) {
+        Ok(r) => r,
+        Err(e) => return send_error(stream, "400 Bad Request", &e),
+    };
+
+    match format.as_str() {
+        "gpl" => {
+            let body = palettes::format_gpl(&result.palette, "Pixeline");
+            send(
+                stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                &["Content-Disposition: attachment; filename=\"pixeline_palette.gpl\""],
+                body.as_bytes(),
+            )
+        }
+        "png" => {
+            let mut png = Vec::new();
+            if let Err(e) = palette_strip_image(&result.palette)
+                .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            {
+                return send_error(
+                    stream,
+                    "500 Internal Server Error",
+                    &format!("encode failed: {e}"),
+                );
+            }
+            send(
+                stream,
+                "200 OK",
+                "image/png",
+                &["Content-Disposition: attachment; filename=\"pixeline_palette.png\""],
+                &png,
+            )
+        }
+        "hex" | "" => {
+            let body = palettes::format_hex_list(&result.palette);
+            send(
+                stream,
+                "200 OK",
+                "text/plain; charset=utf-8",
+                &["Content-Disposition: attachment; filename=\"pixeline_palette.hex\""],
+                body.as_bytes(),
+            )
+        }
+        _ => send_error(
+            stream,
+            "400 Bad Request",
+            "paletteFormat must be hex, gpl, or png",
+        ),
+    }
+}
+
+fn palette_strip_image(palette: &[[u8; 3]]) -> RgbaImage {
+    let width = palette.len().max(1) as u32;
+    let mut img = RgbaImage::new(width, 1);
+    for (x, [r, g, b]) in palette.iter().enumerate() {
+        img.put_pixel(x as u32, 0, Rgba([*r, *g, *b, 255]));
+    }
+    img
+}
 
 fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
     let get = |k: &str| f.get(k).map(|s| s.as_str());
