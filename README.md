@@ -1,6 +1,6 @@
 # Raster to Pixel
 
-Rust CLI for converting fuzzy raster images into deliberate pixel-art PNGs.
+Rust CLI and local GUI for converting fuzzy raster images into deliberate pixel-art PNGs.
 
 Licensed under MIT. See `LICENSE` and `NOTICE`.
 
@@ -8,6 +8,12 @@ Licensed under MIT. See `LICENSE` and `NOTICE`.
 
 ```cmd
 cargo run -- input.png output.png --pixel-size 5 --colors 16 --scale 8
+```
+
+Local GUI:
+
+```cmd
+cargo run --bin gui -- --chrome
 ```
 
 Auto pixel-size:
@@ -42,6 +48,25 @@ Useful knobs:
 --dither bayer8     :: ordered 8x8 Bayer dithering
 --dither-strength .35
 --scale 8           :: nearest-neighbor preview scale
---cell detail       :: default hybrid detail-preserving downsample mode
+--cell detail       :: box, median, detail, or dominant
+--dominant-threshold .25
+--no-snap-grid      :: disable grid phase snapping for pixel-size modes
 --compare           :: write original/result side-by-side
 ```
+
+## How It Works
+
+The pipeline picks a target grid, downsamples in linear RGB, quantizes in Oklab,
+optionally applies Bayer dithering, then writes the raw grid or a nearest-neighbor
+scaled preview.
+
+The default `detail` cell mode chooses between median and dominant per cell:
+
+- Median uses the per-channel median as a target, then snaps to the nearest real
+  source color from that cell. This avoids synthetic fringe colors.
+- Dominant groups near colors into 32-level RGB buckets, averages the winning bucket,
+  and falls back to a box average when the winner is below `--dominant-threshold`.
+- Cells use fractional coverage weights and alpha-weighted color stats, so partial
+  source pixels and transparent edges are handled consistently.
+- Pixel-size modes can snap the sampling grid to the strongest detected edge phase,
+  which helps when the source grid is offset by a few pixels.

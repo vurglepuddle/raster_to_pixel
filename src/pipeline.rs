@@ -13,7 +13,10 @@ use image::{imageops::FilterType, Rgba, RgbaImage};
 use crate::{
     color::{linear_to_oklab, oklab_to_srgb8, srgb8_to_oklab, srgb_to_linear},
     dither::ordered_dither,
-    downsample::{downsample, downsample_grid, CellMode, SamplingGrid},
+    downsample::{
+        downsample_grid_with_dominant_threshold, downsample_with_dominant_threshold, CellMode,
+        SamplingGrid, DEFAULT_DOMINANT_THRESHOLD,
+    },
     kmeans::{build_palette, nearest},
     palettes,
 };
@@ -63,6 +66,8 @@ pub struct Config {
     pub alpha_threshold: u8,
     /// Cell reduction mode used while downsampling.
     pub cell: CellMode,
+    /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
+    pub dominant_threshold: f32,
     /// Write an original|result side-by-side comparison sheet.
     pub compare: bool,
 }
@@ -81,6 +86,7 @@ impl Default for Config {
             scale: 1,
             alpha_threshold: 128,
             cell: CellMode::Detail,
+            dominant_threshold: DEFAULT_DOMINANT_THRESHOLD,
             compare: false,
         }
     }
@@ -105,6 +111,9 @@ impl Config {
         }
         if self.scale == 0 {
             return Err("scale must be at least 1".into());
+        }
+        if !(0.0..=1.0).contains(&self.dominant_threshold) || !self.dominant_threshold.is_finite() {
+            return Err("dominant_threshold must be a finite number in 0.0..=1.0".into());
         }
         Ok(())
     }
@@ -138,7 +147,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
 
     let linear = rgba8_to_linear(src);
     let small = if let Some(sampling) = grid.sampling {
-        downsample_grid(
+        downsample_grid_with_dominant_threshold(
             &linear,
             src_w as usize,
             src_h as usize,
@@ -146,15 +155,17 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
             grid.out_h as usize,
             sampling,
             cfg.cell,
+            cfg.dominant_threshold,
         )
     } else {
-        downsample(
+        downsample_with_dominant_threshold(
             &linear,
             src_w as usize,
             src_h as usize,
             grid.out_w as usize,
             grid.out_h as usize,
             cfg.cell,
+            cfg.dominant_threshold,
         )
     };
     let options = QuantizeOptions {

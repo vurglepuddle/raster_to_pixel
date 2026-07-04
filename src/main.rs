@@ -64,6 +64,10 @@ struct Args {
     #[arg(long, value_enum, default_value_t = CellModeArg::Detail)]
     cell: CellModeArg,
 
+    /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
+    #[arg(long, default_value_t = 0.25)]
+    dominant_threshold: f32,
+
     /// Write an original/result side-by-side comparison sheet.
     #[arg(long)]
     compare: bool,
@@ -160,6 +164,9 @@ fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
     if args.scale == 0 {
         return Err("--scale must be at least 1".into());
     }
+    if !(0.0..=1.0).contains(&args.dominant_threshold) || !args.dominant_threshold.is_finite() {
+        return Err("--dominant-threshold must be a finite number in 0.0..=1.0".into());
+    }
     Ok(())
 }
 
@@ -189,6 +196,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         scale: args.scale,
         alpha_threshold: args.alpha_threshold,
         cell: args.cell.into(),
+        dominant_threshold: args.dominant_threshold,
         compare: args.compare,
     })
 }
