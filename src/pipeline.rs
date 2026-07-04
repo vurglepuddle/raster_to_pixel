@@ -21,6 +21,9 @@ use crate::{
     palettes,
 };
 
+pub const DEFAULT_HIGHLIGHT_COLLAPSE: f32 = 0.03;
+pub const DEFAULT_SHADOW_COLLAPSE: f32 = 0.16;
+
 /// Ordered-dither selection, front-end-agnostic (CLI/GUI map their own enums onto this).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dither {
@@ -68,6 +71,10 @@ pub struct Config {
     pub cell: CellMode,
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     pub dominant_threshold: f32,
+    /// Adaptive-palette highlight cleanup. 0.0 disables; larger values collapse deeper highlights.
+    pub highlight_collapse: f32,
+    /// Adaptive-palette shadow cleanup. 0.0 disables; larger values collapse deeper shadows.
+    pub shadow_collapse: f32,
     /// Write an original|result side-by-side comparison sheet.
     pub compare: bool,
 }
@@ -87,6 +94,8 @@ impl Default for Config {
             alpha_threshold: 128,
             cell: CellMode::Detail,
             dominant_threshold: DEFAULT_DOMINANT_THRESHOLD,
+            highlight_collapse: DEFAULT_HIGHLIGHT_COLLAPSE,
+            shadow_collapse: DEFAULT_SHADOW_COLLAPSE,
             compare: false,
         }
     }
@@ -114,6 +123,12 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.dominant_threshold) || !self.dominant_threshold.is_finite() {
             return Err("dominant_threshold must be a finite number in 0.0..=1.0".into());
+        }
+        if !(0.0..=1.0).contains(&self.highlight_collapse) || !self.highlight_collapse.is_finite() {
+            return Err("highlight_collapse must be a finite number in 0.0..=1.0".into());
+        }
+        if !(0.0..=1.0).contains(&self.shadow_collapse) || !self.shadow_collapse.is_finite() {
+            return Err("shadow_collapse must be a finite number in 0.0..=1.0".into());
         }
         Ok(())
     }
@@ -174,6 +189,8 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         fixed_palette: fixed_palette.as_deref(),
         dither: cfg.dither,
         dither_strength: cfg.dither_strength,
+        highlight_collapse: cfg.highlight_collapse,
+        shadow_collapse: cfg.shadow_collapse,
     };
     let (pixel_art, palette) = quantize_to_rgba8(&small, grid.out_w, grid.out_h, options);
     let palette_len = palette.len();
@@ -628,6 +645,8 @@ struct QuantizeOptions<'a> {
     fixed_palette: Option<&'a [[f32; 3]]>,
     dither: Dither,
     dither_strength: f32,
+    highlight_collapse: f32,
+    shadow_collapse: f32,
 }
 
 fn quantize_to_rgba8(
@@ -638,12 +657,16 @@ fn quantize_to_rgba8(
 ) -> (RgbaImage, Vec<[u8; 3]>) {
     let threshold = options.alpha_threshold as f32 / 255.0;
     let adaptive_palette = options.fixed_palette.is_none();
+    let cleanup = PaletteCleanup {
+        highlight: options.highlight_collapse.clamp(0.0, 1.0),
+        shadow: options.shadow_collapse.clamp(0.0, 1.0),
+    };
     let raw_labs: Vec<[f32; 3]> = linear_rgba
         .chunks_exact(4)
         .map(|px| linear_to_oklab(px[0], px[1], px[2]))
         .collect();
     let dark_anchor = if adaptive_palette {
-        darkest_adaptive_source_color(linear_rgba, &raw_labs, threshold)
+        darkest_adaptive_source_color(linear_rgba, &raw_labs, threshold, cleanup)
     } else {
         None
     };
@@ -651,7 +674,7 @@ fn quantize_to_rgba8(
     for (px, &lab) in linear_rgba.chunks_exact(4).zip(&raw_labs) {
         if px[3] >= threshold {
             samples.push(if adaptive_palette {
-                collapse_adaptive_palette_noise(lab, dark_anchor)
+                collapse_adaptive_palette_noise(lab, dark_anchor, cleanup)
             } else {
                 lab
             });
@@ -671,7 +694,7 @@ fn quantize_to_rgba8(
         .iter()
         .map(|&lab| {
             if adaptive_palette {
-                collapse_adaptive_palette_noise(lab, dark_anchor)
+                collapse_adaptive_palette_noise(lab, dark_anchor, cleanup)
             } else {
                 lab
             }
@@ -710,15 +733,22 @@ fn quantize_to_rgba8(
     (out, palette_srgb)
 }
 
+#[derive(Clone, Copy)]
+struct PaletteCleanup {
+    highlight: f32,
+    shadow: f32,
+}
+
 fn darkest_adaptive_source_color(
     linear_rgba: &[f32],
     labs: &[[f32; 3]],
     alpha_threshold: f32,
+    cleanup: PaletteCleanup,
 ) -> Option<[f32; 3]> {
     linear_rgba
         .chunks_exact(4)
         .zip(labs)
-        .filter(|(px, lab)| px[3] >= alpha_threshold && is_adaptive_near_black(**lab))
+        .filter(|(px, lab)| px[3] >= alpha_threshold && is_adaptive_near_black(**lab, cleanup))
         .map(|(_, &lab)| lab)
         .min_by(|a, b| {
             a[0].partial_cmp(&b[0])
@@ -728,24 +758,31 @@ fn darkest_adaptive_source_color(
         })
 }
 
-fn collapse_adaptive_palette_noise(lab: [f32; 3], dark_anchor: Option<[f32; 3]>) -> [f32; 3] {
+fn collapse_adaptive_palette_noise(
+    lab: [f32; 3],
+    dark_anchor: Option<[f32; 3]>,
+    cleanup: PaletteCleanup,
+) -> [f32; 3] {
     if let Some(anchor) = dark_anchor {
-        if is_adaptive_near_black(lab) {
+        if is_adaptive_near_black(lab, cleanup) {
             return anchor;
         }
     }
-    collapse_adaptive_near_white(lab)
+    collapse_adaptive_near_white(lab, cleanup)
 }
 
-fn is_adaptive_near_black(lab: [f32; 3]) -> bool {
-    lab[0] <= 0.16
+fn is_adaptive_near_black(lab: [f32; 3], cleanup: PaletteCleanup) -> bool {
+    cleanup.shadow > 0.0 && lab[0] <= cleanup.shadow
 }
 
-fn collapse_adaptive_near_white(lab: [f32; 3]) -> [f32; 3] {
-    const MIN_L: f32 = 0.97;
-    const MAX_CHROMA2: f32 = 0.006 * 0.006;
+fn collapse_adaptive_near_white(lab: [f32; 3], cleanup: PaletteCleanup) -> [f32; 3] {
+    if cleanup.highlight <= 0.0 {
+        return lab;
+    }
+    let min_l = 1.0 - cleanup.highlight;
+    let max_chroma = 0.006 + cleanup.highlight * 0.04;
     let chroma2 = lab[1] * lab[1] + lab[2] * lab[2];
-    if lab[0] >= MIN_L && chroma2 <= MAX_CHROMA2 {
+    if lab[0] >= min_l && chroma2 <= max_chroma * max_chroma {
         [1.0, 0.0, 0.0]
     } else {
         lab
@@ -791,6 +828,13 @@ mod tests {
 
     fn cfg() -> Config {
         Config::default()
+    }
+
+    fn default_cleanup() -> PaletteCleanup {
+        PaletteCleanup {
+            highlight: DEFAULT_HIGHLIGHT_COLLAPSE,
+            shadow: DEFAULT_SHADOW_COLLAPSE,
+        }
     }
 
     #[test]
@@ -943,8 +987,10 @@ mod tests {
 
     #[test]
     fn adaptive_near_white_collapse_preserves_warm_off_white() {
-        let near_white = collapse_adaptive_near_white(srgb8_to_oklab(247, 246, 245));
-        let warm_off_white = collapse_adaptive_near_white(srgb8_to_oklab(245, 242, 235));
+        let near_white =
+            collapse_adaptive_near_white(srgb8_to_oklab(247, 246, 245), default_cleanup());
+        let warm_off_white =
+            collapse_adaptive_near_white(srgb8_to_oklab(245, 242, 235), default_cleanup());
 
         assert_eq!(oklab_to_srgb8(near_white), [255, 255, 255]);
         assert_ne!(
@@ -952,6 +998,43 @@ mod tests {
             [255, 255, 255],
             "warm off-white should remain available as an intentional color"
         );
+    }
+
+    #[test]
+    fn adaptive_highlight_collapse_zero_disables_white_cleanup() {
+        let cleanup = PaletteCleanup {
+            highlight: 0.0,
+            ..default_cleanup()
+        };
+        let near_white = collapse_adaptive_near_white(srgb8_to_oklab(247, 246, 245), cleanup);
+
+        assert_ne!(oklab_to_srgb8(near_white), [255, 255, 255]);
+    }
+
+    #[test]
+    fn adaptive_highlight_collapse_can_reach_deeper_neutral_whites() {
+        let cleanup = PaletteCleanup {
+            highlight: 0.25,
+            ..default_cleanup()
+        };
+        let gray_white = collapse_adaptive_near_white(srgb8_to_oklab(238, 238, 238), cleanup);
+        let warm_off_white = collapse_adaptive_near_white(srgb8_to_oklab(245, 242, 235), cleanup);
+
+        assert_eq!(oklab_to_srgb8(gray_white), [255, 255, 255]);
+        assert_eq!(oklab_to_srgb8(warm_off_white), [255, 255, 255]);
+    }
+
+    #[test]
+    fn adaptive_highlight_collapse_preserves_pale_pinks() {
+        let cleanup = PaletteCleanup {
+            highlight: 0.25,
+            ..default_cleanup()
+        };
+        let pale_pink = collapse_adaptive_near_white(srgb8_to_oklab(255, 209, 223), cleanup);
+        let muted_pink = collapse_adaptive_near_white(srgb8_to_oklab(232, 212, 216), cleanup);
+
+        assert_ne!(oklab_to_srgb8(pale_pink), [255, 255, 255]);
+        assert_ne!(oklab_to_srgb8(muted_pink), [255, 255, 255]);
     }
 
     #[test]
@@ -998,12 +1081,32 @@ mod tests {
     #[test]
     fn adaptive_near_black_collapse_preserves_readable_dark_colors() {
         let darkest = srgb8_to_oklab(3, 1, 8);
-        let noisy_dark = collapse_adaptive_palette_noise(srgb8_to_oklab(16, 8, 9), Some(darkest));
-        let readable_navy =
-            collapse_adaptive_palette_noise(srgb8_to_oklab(29, 43, 83), Some(darkest));
+        let noisy_dark = collapse_adaptive_palette_noise(
+            srgb8_to_oklab(16, 8, 9),
+            Some(darkest),
+            default_cleanup(),
+        );
+        let readable_navy = collapse_adaptive_palette_noise(
+            srgb8_to_oklab(29, 43, 83),
+            Some(darkest),
+            default_cleanup(),
+        );
 
         assert_eq!(oklab_to_srgb8(noisy_dark), [3, 1, 8]);
         assert_eq!(oklab_to_srgb8(readable_navy), [29, 43, 83]);
+    }
+
+    #[test]
+    fn adaptive_shadow_collapse_zero_disables_dark_cleanup() {
+        let cleanup = PaletteCleanup {
+            shadow: 0.0,
+            ..default_cleanup()
+        };
+        let darkest = srgb8_to_oklab(3, 1, 8);
+        let noisy_dark =
+            collapse_adaptive_palette_noise(srgb8_to_oklab(16, 8, 9), Some(darkest), cleanup);
+
+        assert_ne!(oklab_to_srgb8(noisy_dark), [3, 1, 8]);
     }
 
     #[test]

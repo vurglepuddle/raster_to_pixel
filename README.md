@@ -50,6 +50,8 @@ Useful knobs:
 --scale 8           :: nearest-neighbor preview scale
 --cell detail       :: box, median, detail, or dominant
 --dominant-threshold .25
+--highlight-collapse .03
+--shadow-collapse .16
 --no-snap-grid      :: disable grid phase snapping for pixel-size modes
 --compare           :: write original/result side-by-side
 ```

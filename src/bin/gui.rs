@@ -20,7 +20,9 @@ use std::sync::{Arc, Mutex};
 use image::{ImageFormat, RgbaImage};
 use raster_to_pixel::{
     downsample::CellMode,
-    pipeline::{self, Config, Dither, PaletteChoice},
+    pipeline::{
+        self, Config, Dither, PaletteChoice, DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
+    },
 };
 
 /// The single cached source image (single-user local tool -> one slot behind a Mutex).
@@ -313,6 +315,10 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         alpha_threshold: parse_or::<u16>(get("alphaThreshold"), 128).min(255) as u8,
         cell,
         dominant_threshold: parse_or::<f32>(get("dominantThreshold"), 0.25).clamp(0.0, 1.0),
+        highlight_collapse: parse_or::<f32>(get("highlightCollapse"), DEFAULT_HIGHLIGHT_COLLAPSE)
+            .clamp(0.0, 1.0),
+        shadow_collapse: parse_or::<f32>(get("shadowCollapse"), DEFAULT_SHADOW_COLLAPSE)
+            .clamp(0.0, 1.0),
         compare: if preview {
             false
         } else {
