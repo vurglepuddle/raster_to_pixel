@@ -13,7 +13,7 @@ use image::{imageops::FilterType, Rgba, RgbaImage};
 use crate::{
     color::{linear_to_oklab, oklab_to_srgb8, srgb8_to_oklab, srgb_to_linear},
     dither::ordered_dither,
-    downsample::{downsample, CellMode},
+    downsample::{downsample, downsample_grid, CellMode, SamplingGrid},
     kmeans::{build_palette, nearest},
     palettes,
 };
@@ -47,6 +47,8 @@ pub struct Config {
     pub pixel_size: Option<f64>,
     /// Estimate pixel size from image edges. Ignored when `pixel_size` is set.
     pub auto_pixel_size: bool,
+    /// Align exact pixel-size cells to the strongest detected grid phase.
+    pub snap_grid: bool,
     /// Adaptive palette size (ignored for fixed palettes).
     pub colors: usize,
     /// Palette source.
@@ -71,6 +73,7 @@ impl Default for Config {
             size: 64,
             pixel_size: None,
             auto_pixel_size: false,
+            snap_grid: true,
             colors: 16,
             palette: PaletteChoice::Adaptive,
             dither: Dither::None,
@@ -117,6 +120,7 @@ pub struct ConvertResult {
     pub out_w: u32,
     pub out_h: u32,
     pub detected_pixel_size: Option<f64>,
+    pub grid_phase: Option<(u32, u32)>,
 }
 
 /// Estimate source-pixels-per-output-pixel from image structure, for the GUI to show
@@ -129,18 +133,30 @@ pub fn detect_pixel_size_of(src: &RgbaImage) -> Option<f64> {
 pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
     cfg.validate()?;
     let (src_w, src_h) = src.dimensions();
-    let (dst_w, dst_h, detected_pixel_size) = target_grid(src, cfg);
+    let grid = target_grid(src, cfg);
     let fixed_palette = resolve_palette(&cfg.palette)?;
 
     let linear = rgba8_to_linear(src);
-    let small = downsample(
-        &linear,
-        src_w as usize,
-        src_h as usize,
-        dst_w as usize,
-        dst_h as usize,
-        cfg.cell,
-    );
+    let small = if let Some(sampling) = grid.sampling {
+        downsample_grid(
+            &linear,
+            src_w as usize,
+            src_h as usize,
+            grid.out_w as usize,
+            grid.out_h as usize,
+            sampling,
+            cfg.cell,
+        )
+    } else {
+        downsample(
+            &linear,
+            src_w as usize,
+            src_h as usize,
+            grid.out_w as usize,
+            grid.out_h as usize,
+            cfg.cell,
+        )
+    };
     let options = QuantizeOptions {
         colors: cfg.colors,
         alpha_threshold: cfg.alpha_threshold,
@@ -148,7 +164,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         dither: cfg.dither,
         dither_strength: cfg.dither_strength,
     };
-    let (pixel_art, palette) = quantize_to_rgba8(&small, dst_w, dst_h, options);
+    let (pixel_art, palette) = quantize_to_rgba8(&small, grid.out_w, grid.out_h, options);
     let palette_len = palette.len();
     let scaled = if cfg.scale == 1 {
         pixel_art
@@ -165,9 +181,10 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         image,
         palette,
         palette_len,
-        out_w: dst_w,
-        out_h: dst_h,
-        detected_pixel_size,
+        out_w: grid.out_w,
+        out_h: grid.out_h,
+        detected_pixel_size: grid.detected_pixel_size,
+        grid_phase: grid.phase,
     })
 }
 
@@ -187,23 +204,85 @@ fn resolve_palette(choice: &PaletteChoice) -> Result<Option<Vec<[f32; 3]>>, Stri
     ))
 }
 
-pub(crate) fn target_grid(src: &RgbaImage, cfg: &Config) -> (u32, u32, Option<f64>) {
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GridPlan {
+    pub out_w: u32,
+    pub out_h: u32,
+    pub detected_pixel_size: Option<f64>,
+    pub phase: Option<(u32, u32)>,
+    pub sampling: Option<SamplingGrid>,
+}
+
+pub(crate) fn target_grid(src: &RgbaImage, cfg: &Config) -> GridPlan {
     let (src_w, src_h) = src.dimensions();
     if let Some(pixel_size) = cfg.pixel_size {
-        let size = target_size_from_pixel_size(src_w, src_h, pixel_size);
-        (size.0, size.1, None)
+        grid_plan_from_pixel_size(src, pixel_size, None, cfg.snap_grid)
     } else if cfg.auto_pixel_size {
         if let Some(pixel_size) = detect_pixel_size(src) {
-            let size = target_size_from_pixel_size(src_w, src_h, pixel_size);
-            (size.0, size.1, Some(pixel_size))
+            grid_plan_from_pixel_size(src, pixel_size, Some(pixel_size), cfg.snap_grid)
         } else {
             let size = target_size(src_w, src_h, cfg.size);
-            (size.0, size.1, None)
+            GridPlan {
+                out_w: size.0,
+                out_h: size.1,
+                detected_pixel_size: None,
+                phase: None,
+                sampling: None,
+            }
         }
     } else {
         let size = target_size(src_w, src_h, cfg.size);
-        (size.0, size.1, None)
+        GridPlan {
+            out_w: size.0,
+            out_h: size.1,
+            detected_pixel_size: None,
+            phase: None,
+            sampling: None,
+        }
     }
+}
+
+fn grid_plan_from_pixel_size(
+    src: &RgbaImage,
+    pixel_size: f64,
+    detected_pixel_size: Option<f64>,
+    snap_grid: bool,
+) -> GridPlan {
+    let (src_w, src_h) = src.dimensions();
+    if snap_grid {
+        if let Some(phase) = detect_grid_phase(src, pixel_size) {
+            let out_w = snapped_axis_size(src_w, pixel_size, phase.0).max(1);
+            let out_h = snapped_axis_size(src_h, pixel_size, phase.1).max(1);
+            return GridPlan {
+                out_w,
+                out_h,
+                detected_pixel_size,
+                phase: Some(phase),
+                sampling: Some(SamplingGrid {
+                    origin_x: phase.0 as f64,
+                    origin_y: phase.1 as f64,
+                    cell_w: pixel_size,
+                    cell_h: pixel_size,
+                }),
+            };
+        }
+    }
+
+    let size = target_size_from_pixel_size(src_w, src_h, pixel_size);
+    GridPlan {
+        out_w: size.0,
+        out_h: size.1,
+        detected_pixel_size,
+        phase: None,
+        sampling: None,
+    }
+}
+
+fn snapped_axis_size(src: u32, pixel_size: f64, phase: u32) -> u32 {
+    if phase >= src {
+        return 1;
+    }
+    (((src - phase) as f64 / pixel_size).floor() as u32).clamp(1, src)
 }
 
 pub(crate) fn target_size(src_w: u32, src_h: u32, requested_long: u32) -> (u32, u32) {
@@ -248,6 +327,49 @@ pub(crate) fn detect_pixel_size(src: &RgbaImage) -> Option<f64> {
 
     let upper = (src.width().min(src.height()) as f64 / 2.0).clamp(1.0, MAX_AUTO_PIXEL_SIZE);
     Some(detected.clamp(1.0, upper))
+}
+
+pub(crate) fn detect_grid_phase(src: &RgbaImage, pixel_size: f64) -> Option<(u32, u32)> {
+    let step = pixel_size.round();
+    if step < 2.0 || (pixel_size - step).abs() > 0.2 {
+        return None;
+    }
+    let step = step as usize;
+    let (cols, rows) = edge_profiles(src);
+    let x = (best_phase_for_step(&cols, step)? + 1) % step;
+    let y = (best_phase_for_step(&rows, step)? + 1) % step;
+    Some((x as u32, y as u32))
+}
+
+fn best_phase_for_step(profile: &[f64], step: usize) -> Option<usize> {
+    if step < 2 || profile.len() <= step {
+        return None;
+    }
+
+    let total: f64 = profile.iter().sum();
+    if total <= f64::EPSILON {
+        return None;
+    }
+
+    let mut best_phase = 0usize;
+    let mut best_score = f64::NEG_INFINITY;
+    for phase in 0..step {
+        let mut score = 0.0;
+        let mut pos = phase;
+        while pos < profile.len() {
+            score += profile[pos];
+            pos += step;
+        }
+        if score > best_score {
+            best_score = score;
+            best_phase = phase;
+        }
+    }
+
+    if best_score <= f64::EPSILON {
+        return None;
+    }
+    Some(best_phase)
 }
 
 const MAX_AUTO_PIXEL_SIZE: f64 = 32.0;
@@ -645,9 +767,37 @@ mod tests {
             ..cfg()
         };
 
-        let (w, h, detected) = target_grid(&img, &config);
-        assert_eq!((w, h), (15, 10));
-        assert!(detected.is_none());
+        let grid = target_grid(&img, &config);
+        assert_eq!((grid.out_w, grid.out_h), (15, 10));
+        assert!(grid.detected_pixel_size.is_none());
+        assert!(grid.phase.is_none());
+    }
+
+    #[test]
+    fn detects_grid_phase_for_offset_pixel_boundaries() {
+        let mut img = RgbaImage::new(17, 14);
+        for y in 0..img.height() {
+            for x in 0..img.width() {
+                let checker = ((x.saturating_sub(2) / 3) + (y.saturating_sub(1) / 3)) % 2 == 0;
+                let color = if checker {
+                    Rgba([230, 220, 90, 255])
+                } else {
+                    Rgba([20, 35, 80, 255])
+                };
+                img.put_pixel(x, y, color);
+            }
+        }
+
+        assert_eq!(detect_grid_phase(&img, 3.0), Some((2, 1)));
+
+        let config = Config {
+            pixel_size: Some(3.0),
+            snap_grid: true,
+            ..cfg()
+        };
+        let grid = target_grid(&img, &config);
+        assert_eq!(grid.phase, Some((2, 1)));
+        assert_eq!((grid.out_w, grid.out_h), (5, 4));
     }
 
     #[test]

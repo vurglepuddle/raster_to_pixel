@@ -32,6 +32,10 @@ struct Args {
     #[arg(long)]
     auto_pixel_size: bool,
 
+    /// Disable edge-based grid phase snapping for --pixel-size/--auto-pixel-size.
+    #[arg(long)]
+    no_snap_grid: bool,
+
     /// Adaptive palette size.
     #[arg(long, default_value_t = 16)]
     colors: usize,
@@ -122,6 +126,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             result.out_h
         );
     }
+    if let Some((x, y)) = result.grid_phase {
+        eprintln!("grid phase: {x},{y}");
+    }
 
     result.image.save(&args.output)?;
     eprintln!(
@@ -174,6 +181,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         size: args.size,
         pixel_size: args.pixel_size,
         auto_pixel_size: args.auto_pixel_size,
+        snap_grid: !args.no_snap_grid,
         colors: args.colors,
         palette,
         dither: args.dither.into(),

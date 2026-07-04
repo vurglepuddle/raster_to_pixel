@@ -18,6 +18,14 @@ pub enum CellMode {
     Dominant,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplingGrid {
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub cell_w: f64,
+    pub cell_h: f64,
+}
+
 /// Input: linear RGBA rows, `src_w * src_h * 4` f32s (RGB NOT premultiplied;
 /// alpha in [0,1]). Output: `dst_w * dst_h * 4` in the same layout.
 pub fn downsample(
@@ -28,18 +36,37 @@ pub fn downsample(
     dst_h: usize,
     mode: CellMode,
 ) -> Vec<f32> {
+    let grid = SamplingGrid {
+        origin_x: 0.0,
+        origin_y: 0.0,
+        cell_w: src_w as f64 / dst_w as f64,
+        cell_h: src_h as f64 / dst_h as f64,
+    };
+    downsample_grid(src, src_w, src_h, dst_w, dst_h, grid, mode)
+}
+
+pub fn downsample_grid(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    grid: SamplingGrid,
+    mode: CellMode,
+) -> Vec<f32> {
     assert_eq!(src.len(), src_w * src_h * 4);
     assert!(dst_w >= 1 && dst_h >= 1 && dst_w <= src_w && dst_h <= src_h);
+    assert!(grid.cell_w > 0.0 && grid.cell_h > 0.0);
     let mut out = Vec::with_capacity(dst_w * dst_h * 4);
 
     for cy in 0..dst_h {
         // f64 bounds so 1000px -> 64 cells has no drift/truncation.
-        let y0 = cy as f64 * src_h as f64 / dst_h as f64;
-        let y1 = (cy + 1) as f64 * src_h as f64 / dst_h as f64;
+        let y0 = grid.origin_y + cy as f64 * grid.cell_h;
+        let y1 = grid.origin_y + (cy + 1) as f64 * grid.cell_h;
         for cx in 0..dst_w {
-            let x0 = cx as f64 * src_w as f64 / dst_w as f64;
-            let x1 = (cx + 1) as f64 * src_w as f64 / dst_w as f64;
-            let cell = collect_cell(src, src_w, x0, x1, y0, y1);
+            let x0 = grid.origin_x + cx as f64 * grid.cell_w;
+            let x1 = grid.origin_x + (cx + 1) as f64 * grid.cell_w;
+            let cell = collect_cell(src, src_w, src_h, x0, x1, y0, y1);
             out.extend_from_slice(&reduce_cell(&cell, mode));
         }
     }
@@ -49,15 +76,19 @@ pub fn downsample(
 fn collect_cell(
     src: &[f32],
     src_w: usize,
+    src_h: usize,
     x0: f64,
     x1: f64,
     y0: f64,
     y1: f64,
 ) -> Vec<WeightedPixel> {
-    let ix0 = x0.floor() as usize;
-    let ix1 = x1.ceil() as usize;
-    let iy0 = y0.floor() as usize;
-    let iy1 = y1.ceil() as usize;
+    let ix0 = x0.floor().max(0.0) as usize;
+    let ix1 = (x1.ceil().min(src_w as f64).max(0.0)) as usize;
+    let iy0 = y0.floor().max(0.0) as usize;
+    let iy1 = (y1.ceil().min(src_h as f64).max(0.0)) as usize;
+    if ix0 >= ix1 || iy0 >= iy1 {
+        return Vec::new();
+    }
     let mut v = Vec::with_capacity((ix1 - ix0) * (iy1 - iy0));
     for y in iy0..iy1 {
         let wy = overlap_1d(y0, y1, y as f64, y as f64 + 1.0);
@@ -90,6 +121,9 @@ fn overlap_1d(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
 fn reduce_cell(cell: &[WeightedPixel], mode: CellMode) -> [f32; 4] {
     let area_sum: f32 = cell.iter().map(|p| p.weight).sum();
     let a_sum: f32 = cell.iter().map(|p| p.rgba[3] * p.weight).sum();
+    if area_sum <= f32::EPSILON {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
     let a_mean = a_sum / area_sum;
     if a_sum <= f32::EPSILON {
         return [0.0, 0.0, 0.0, 0.0]; // Fully transparent: RGB is meaningless.
@@ -260,6 +294,36 @@ mod tests {
         let out = downsample(&src, 3, 1, 2, 1, CellMode::Box);
         assert!((out[0] - (1.0 / 3.0)).abs() < 1e-6, "got {out:?}");
         assert!((out[4] - (1.0 / 3.0)).abs() < 1e-6, "got {out:?}");
+    }
+
+    #[test]
+    fn sampling_grid_can_start_at_detected_phase() {
+        let src = vec![
+            0.0, 0.0, 0.0, 1.0, //
+            0.2, 0.2, 0.2, 1.0, //
+            0.2, 0.2, 0.2, 1.0, //
+            0.8, 0.8, 0.8, 1.0, //
+            0.8, 0.8, 0.8, 1.0, //
+            0.4, 0.4, 0.4, 1.0, //
+            0.4, 0.4, 0.4, 1.0,
+        ];
+        let out = downsample_grid(
+            &src,
+            7,
+            1,
+            3,
+            1,
+            SamplingGrid {
+                origin_x: 1.0,
+                origin_y: 0.0,
+                cell_w: 2.0,
+                cell_h: 1.0,
+            },
+            CellMode::Box,
+        );
+        assert!((out[0] - 0.2).abs() < 1e-6, "got {out:?}");
+        assert!((out[4] - 0.8).abs() < 1e-6, "got {out:?}");
+        assert!((out[8] - 0.4).abs() < 1e-6, "got {out:?}");
     }
 
     #[test]

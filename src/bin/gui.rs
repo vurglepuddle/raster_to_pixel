@@ -243,6 +243,10 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
         .detected_pixel_size
         .map(|v| format!("{v:.2}"))
         .unwrap_or_default();
+    let phase = result
+        .grid_phase
+        .map(|(x, y)| format!("{x},{y}"))
+        .unwrap_or_default();
     let palette_hex: String = result
         .palette
         .iter()
@@ -255,6 +259,7 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
         format!("X-Out-Height: {}", result.out_h),
         format!("X-Palette-Len: {}", result.palette_len),
         format!("X-Detected-Pixel-Size: {detected}"),
+        format!("X-Grid-Phase: {phase}"),
         format!("X-Palette: {palette_hex}"),
     ];
     if !preview {
@@ -295,6 +300,7 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         size: parse_or::<u32>(get("size"), 64).max(1),
         pixel_size,
         auto_pixel_size,
+        snap_grid: !matches!(get("snapGrid"), Some("false" | "0" | "off")),
         colors: (parse_or::<usize>(get("colors"), 16)).clamp(1, 512),
         palette,
         dither,
