@@ -37,13 +37,15 @@
   .togglegrp{display:flex;gap:3px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:3px;}
 
   .main{display:flex;flex:1;min-height:0;}
-  .stage{position:relative;flex:1;min-width:0;display:grid;place-items:center;overflow:auto;
+  .stage{position:relative;flex:1;min-width:0;overflow:hidden;cursor:grab;touch-action:none;
     background:repeating-conic-gradient(var(--check-a) 0% 25%,var(--check-b) 0% 50%) 50% / 22px 22px;}
-  #preview{image-rendering:pixelated;box-shadow:0 6px 30px rgba(0,0,0,.45);border-radius:2px;display:none;}
-  #empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--text-mute);font-size:13px;pointer-events:none;}
+  .stage.dragging{cursor:grabbing;}
+  #preview{position:absolute;left:50%;top:50%;max-width:none;max-height:none;image-rendering:pixelated;
+    box-shadow:0 6px 30px rgba(0,0,0,.45);border-radius:2px;display:none;user-select:none;-webkit-user-drag:none;}
+  #empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--text-mute);font-size:13px;pointer-events:none;}
   #empty b{color:var(--text-dim);font-size:15px;}
   .overlay{position:absolute;display:flex;align-items:center;gap:7px;background:color-mix(in srgb,var(--panel) 82%,transparent);
-    backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:9px;padding:5px 10px;}
+    backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:9px;padding:5px 10px;z-index:5;}
   .rail{width:326px;flex-shrink:0;border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:14px 16px;}
   .sec{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:18px 0 8px;}
   .sec.first{margin-top:0;}
@@ -68,17 +70,17 @@
     border:1px solid var(--line);background:transparent;color:var(--text-dim);}
   .seg.on{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);}
 
-  .foot{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 18px;height:56px;border-top:1px solid var(--line);background:var(--panel);flex-shrink:0;}
-  .status{display:flex;align-items:center;gap:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);font-variant-numeric:tabular-nums;flex-wrap:wrap;}
+  .foot{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:8px 18px;min-height:56px;border-top:1px solid var(--line);background:var(--panel);flex-shrink:0;}
+  .status{display:flex;align-items:center;gap:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);font-variant-numeric:tabular-nums;flex-wrap:wrap;flex:1;min-width:0;}
   .status .k{color:var(--text-mute);}
-  .swatches{display:flex;align-items:center;gap:4px;}
-  .swatch{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.28);}
-  .exportgrp{display:flex;align-items:center;gap:12px;}
+  .swatches{--palette-cols:16;display:grid;grid-template-columns:repeat(var(--palette-cols),minmax(4px,1fr));gap:0;align-items:stretch;width:min(56vw,720px);max-width:100%;background:var(--line);border:1px solid color-mix(in srgb,var(--line) 75%,transparent);overflow:hidden;}
+  .swatch{aspect-ratio:1 / 1;width:100%;min-width:0;border:none;border-radius:0;}
+  .exportgrp{display:flex;align-items:center;gap:12px;flex-shrink:0;}
   .stepper{display:flex;align-items:center;gap:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:2px;}
   .stepper button{width:24px;height:24px;border:none;background:transparent;color:var(--text);font-size:15px;cursor:pointer;border-radius:5px;}
   .save{background:var(--accent);border:none;color:var(--on-accent);border-radius:8px;padding:9px 18px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;}
   .caplabel{font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.07em;font-weight:700;}
-  .toast{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--on-accent);font-weight:700;font-size:12px;padding:8px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);}
+  .toast{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--on-accent);font-weight:700;font-size:12px;padding:8px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:6;}
   .accentpop{position:absolute;top:44px;right:12px;z-index:31;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px;box-shadow:0 18px 44px rgba(0,0,0,.45);width:184px;}
   .accentgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
   .accentgrid button{width:100%;height:30px;border-radius:7px;cursor:pointer;padding:0;border:2px solid color-mix(in srgb,var(--line) 65%,transparent);}
@@ -86,6 +88,11 @@
   .accentauto{margin-top:12px;width:100%;padding:7px;font:inherit;font-size:11px;font-weight:600;border-radius:8px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);}
   .accentauto.on{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);}
   .customerr{margin-top:5px;font-size:11px;color:var(--err);}
+  @media (max-width:900px){
+    .foot{align-items:stretch;flex-direction:column;gap:8px;}
+    .swatches{width:100%;}
+    .exportgrp{justify-content:flex-end;}
+  }
 </style>
 </head>
 <body>
@@ -115,7 +122,7 @@
   <div class="main">
     <!-- stage -->
     <div class="stage" id="stage">
-      <img id="preview" alt="preview">
+      <img id="preview" alt="preview" draggable="false">
       <div id="empty"><b>Drop an image here</b><span>or click “Open…” — PNG, JPG, or WebP</span></div>
       <div class="overlay" id="renderInd" style="top:14px;left:14px;display:none;">
         <div style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:rtpPulse 1s ease-in-out infinite;"></div>
@@ -200,6 +207,8 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, isNaN(v) ? a : v));
+const ZOOMS = [1, 2, 4, 6, 8, 12, 16];
+const PALETTE_PREVIEW_MAX = 256;
 
 const state = {
   theme: 'dark', accent: null,
@@ -207,7 +216,7 @@ const state = {
   sizeMode: 'size', size: 64, pixelSize: 6, snapGrid: true,
   colors: 16, palette: 'adaptive', customHex: '',
   cell: 'detail', dominantThreshold: 0.25, dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
-  scale: 1, compare: false, zoom: 6, showOriginal: false,
+  scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false,
   outW: 0, outH: 0, paletteLen: 0, gridPhase: '', rendering: false,
   swatches: [], customError: '',
 };
@@ -234,7 +243,7 @@ buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['
 buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
 buildSeg($('themeGrp'), [['light','Light'],['dark','Dark']], 'seg', v => { state.theme = v; savePrefs(); applyTheme(); });
 buildSeg($('baGrp'), [['result','Result'],['original','Original']], 'seg', v => { state.showOriginal = (v === 'original'); updatePreviewImg(); render(); });
-buildSeg($('zoomGrp'), [[1,'1×'],[2,'2×'],[4,'4×'],[6,'6×'],[8,'8×'],[12,'12×'],[16,'16×']], 'seg', v => { state.zoom = v; updatePreviewImg(); render(); });
+buildSeg($('zoomGrp'), ZOOMS.map(v => [v, v + '×']), 'seg', v => setZoom(v));
 buildSeg($('colorPresets'), [[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg', v => set({ colors: v }));
 
 // ── inputs ──────────────────────────────────────────────────────────────────
@@ -269,6 +278,45 @@ stage.addEventListener('drop', e => {
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
   if (f) loadFile(f);
 });
+$('preview').addEventListener('dragstart', e => e.preventDefault());
+
+let panDrag = null;
+stage.addEventListener('pointerdown', e => {
+  if (!state.hasImage || e.button !== 0 || e.target.closest('.overlay')) return;
+  e.preventDefault();
+  panDrag = {
+    id: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    panX: state.panX,
+    panY: state.panY,
+  };
+  stage.setPointerCapture(e.pointerId);
+  stage.classList.add('dragging');
+});
+stage.addEventListener('pointermove', e => {
+  if (!panDrag || e.pointerId !== panDrag.id) return;
+  state.panX = panDrag.panX + e.clientX - panDrag.x;
+  state.panY = panDrag.panY + e.clientY - panDrag.y;
+  clampPan();
+  applyPreviewTransform();
+});
+function stopPan(e) {
+  if (!panDrag || e.pointerId !== panDrag.id) return;
+  panDrag = null;
+  stage.classList.remove('dragging');
+  try { stage.releasePointerCapture(e.pointerId); } catch (err) {}
+}
+stage.addEventListener('pointerup', stopPan);
+stage.addEventListener('pointercancel', stopPan);
+stage.addEventListener('wheel', e => {
+  if (!state.hasImage) return;
+  e.preventDefault();
+  const i = ZOOMS.indexOf(state.zoom);
+  const next = ZOOMS[clamp(i + (e.deltaY < 0 ? 1 : -1), 0, ZOOMS.length - 1)];
+  setZoom(next, e);
+}, { passive: false });
+window.addEventListener('resize', () => { clampPan(); applyPreviewTransform(); });
 
 // accent menu
 $('accentBtn').onclick = () => { const p = $('accentPop'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
@@ -319,15 +367,56 @@ function computeDims() {
   else { oh = outLong; ow = Math.max(1, Math.round(outLong * s.srcW / s.srcH)); }
   return { ow: Math.min(ow, s.srcW || ow), oh: Math.min(oh, s.srcH || oh) };
 }
+function resetPan() {
+  state.panX = 0;
+  state.panY = 0;
+}
+function displayDims() {
+  const d = state.outW ? { ow: state.outW, oh: state.outH } : computeDims();
+  return { w: d.ow * state.zoom, h: d.oh * state.zoom, ow: d.ow, oh: d.oh };
+}
+function clampPan() {
+  if (!state.hasImage) {
+    resetPan();
+    return;
+  }
+  const rect = stage.getBoundingClientRect();
+  const d = displayDims();
+  const maxX = Math.max(0, (d.w - rect.width) * 0.5);
+  const maxY = Math.max(0, (d.h - rect.height) * 0.5);
+  state.panX = clamp(state.panX, -maxX, maxX);
+  state.panY = clamp(state.panY, -maxY, maxY);
+}
+function applyPreviewTransform() {
+  $('preview').style.transform = `translate(calc(-50% + ${state.panX}px), calc(-50% + ${state.panY}px))`;
+}
+function setZoom(next, anchor) {
+  next = ZOOMS.includes(next) ? next : ZOOMS[0];
+  if (next === state.zoom) return;
+  const old = state.zoom;
+  if (anchor && state.hasImage) {
+    const rect = stage.getBoundingClientRect();
+    const dx = anchor.clientX - (rect.left + rect.width * 0.5);
+    const dy = anchor.clientY - (rect.top + rect.height * 0.5);
+    const ratio = next / old;
+    state.panX = dx - (dx - state.panX) * ratio;
+    state.panY = dy - (dy - state.panY) * ratio;
+  }
+  state.zoom = next;
+  updatePreviewImg();
+  render();
+}
 function updatePreviewImg() {
   const img = $('preview');
-  const d = state.outW ? { ow: state.outW, oh: state.outH } : computeDims();
-  img.style.width = (d.ow * state.zoom) + 'px';
-  img.style.height = (d.oh * state.zoom) + 'px';
+  const d = displayDims();
+  img.style.width = d.w + 'px';
+  img.style.height = d.h + 'px';
   if (state.showOriginal) { img.src = originalURL || ''; img.style.imageRendering = 'auto'; }
   else { img.src = previewURL || ''; img.style.imageRendering = 'pixelated'; }
   img.style.display = state.hasImage ? 'block' : 'none';
   $('empty').style.display = state.hasImage ? 'none' : 'flex';
+  clampPan();
+  applyPreviewTransform();
 }
 
 function settingsParams() {
@@ -391,6 +480,7 @@ async function loadFile(file) {
   state.fileName = file.name;
   state.hasImage = false; state.showOriginal = false; state.outW = 0; state.outH = 0;
   state.paletteLen = 0; state.gridPhase = ''; state.swatches = []; state.customError = '';
+  resetPan();
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   if (originalURL) URL.revokeObjectURL(originalURL);
   originalURL = URL.createObjectURL(file);
@@ -479,8 +569,18 @@ function render() {
   $('stPx').textContent = (s.autoPixelSize == null) ? '—' : s.autoPixelSize.toFixed(1);
   $('stPhase').textContent = s.gridPhase || '-';
   const sw = $('stSwatches'); sw.innerHTML = '';
-  s.swatches.slice(0, 16).forEach(hex => {
-    const d = document.createElement('div'); d.className = 'swatch'; d.style.background = hex; sw.appendChild(d);
+  const visibleSwatches = s.swatches.slice(0, PALETTE_PREVIEW_MAX);
+  const cols = visibleSwatches.length <= 16 ? Math.max(visibleSwatches.length, 1) : Math.min(64, Math.ceil(visibleSwatches.length / Math.ceil(visibleSwatches.length / 64)));
+  sw.style.setProperty('--palette-cols', cols);
+  sw.title = visibleSwatches.length
+    ? `Showing ${visibleSwatches.length} of ${s.swatches.length} palette colors`
+    : '';
+  visibleSwatches.forEach((hex, i) => {
+    const d = document.createElement('div');
+    d.className = 'swatch';
+    d.style.background = hex;
+    d.title = `${i}: ${hex}`;
+    sw.appendChild(d);
   });
 
   // accent menu active markers
