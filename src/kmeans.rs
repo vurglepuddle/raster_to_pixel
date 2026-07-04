@@ -93,6 +93,51 @@ fn farthest_sample(samples: &[[f32; 3]], assign: &[u32], centers: &[[f32; 3]]) -
     best
 }
 
+/// Merge adaptive-palette entries closer than `max_dist` (Oklab distance).
+///
+/// Entries are weighted by how many samples map to them; the heaviest entry
+/// of each cluster survives *as-is* (a real, already-chosen color — no new
+/// blended colors are invented) and absorbs every not-yet-absorbed entry
+/// within `max_dist`. Deterministic: weight-descending order, index
+/// tie-break. Returns a luma-sorted palette.
+pub fn merge_close_entries(
+    palette: &[[f32; 3]],
+    samples: &[[f32; 3]],
+    max_dist: f32,
+) -> Vec<[f32; 3]> {
+    if max_dist <= 0.0 || palette.len() <= 1 {
+        return palette.to_vec();
+    }
+    let mut weights = vec![0f64; palette.len()];
+    for s in samples {
+        weights[nearest(palette, *s)] += 1.0;
+    }
+    let mut order: Vec<usize> = (0..palette.len()).collect();
+    order.sort_by(|&a, &b| weights[b].partial_cmp(&weights[a]).unwrap().then(a.cmp(&b)));
+
+    let max_d2 = max_dist * max_dist;
+    let mut absorbed = vec![false; palette.len()];
+    let mut kept = Vec::new();
+    for &i in &order {
+        if absorbed[i] {
+            continue;
+        }
+        absorbed[i] = true;
+        kept.push(palette[i]);
+        for &j in &order {
+            if !absorbed[j] && oklab_dist2(palette[i], palette[j]) <= max_d2 {
+                absorbed[j] = true;
+            }
+        }
+    }
+    kept.sort_by(|a, b| {
+        a[0].partial_cmp(&b[0])
+            .unwrap()
+            .then(a[1].partial_cmp(&b[1]).unwrap())
+    });
+    kept
+}
+
 /// Index of nearest palette entry to `p` (Oklab squared distance).
 pub fn nearest(palette: &[[f32; 3]], p: [f32; 3]) -> usize {
     let mut best = 0;
@@ -208,5 +253,41 @@ mod tests {
         let pal = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         assert_eq!(nearest(&pal, [0.2, 0.0, 0.0]), 0);
         assert_eq!(nearest(&pal, [0.8, 0.0, 0.0]), 1);
+    }
+
+    #[test]
+    fn merge_keeps_the_heavier_anchor_color_verbatim() {
+        let palette = vec![[0.50, 0.0, 0.0], [0.51, 0.0, 0.0], [0.90, 0.0, 0.0]];
+        // 0.50 gets the most samples, so it must survive unchanged.
+        let mut samples = vec![[0.50, 0.0, 0.0]; 10];
+        samples.extend(vec![[0.51, 0.0, 0.0]; 3]);
+        samples.extend(vec![[0.90, 0.0, 0.0]; 5]);
+
+        let merged = merge_close_entries(&palette, &samples, 0.02);
+        assert_eq!(merged.len(), 2, "{merged:?}");
+        assert!(
+            merged.contains(&[0.50, 0.0, 0.0]),
+            "anchor kept: {merged:?}"
+        );
+        assert!(merged.contains(&[0.90, 0.0, 0.0]));
+        assert!(!merged.contains(&[0.51, 0.0, 0.0]), "duplicate absorbed");
+    }
+
+    #[test]
+    fn merge_leaves_distinct_colors_and_zero_threshold_alone() {
+        let palette = vec![[0.2, 0.0, 0.0], [0.5, 0.0, 0.0], [0.8, 0.0, 0.0]];
+        let samples: Vec<[f32; 3]> = palette.clone();
+        assert_eq!(merge_close_entries(&palette, &samples, 0.05), palette);
+        assert_eq!(merge_close_entries(&palette, &samples, 0.0), palette);
+    }
+
+    #[test]
+    fn merge_is_deterministic_with_tied_weights() {
+        let palette = vec![[0.40, 0.0, 0.0], [0.41, 0.0, 0.0]];
+        let samples = vec![[0.40, 0.0, 0.0], [0.41, 0.0, 0.0]]; // 1 vs 1
+        let a = merge_close_entries(&palette, &samples, 0.02);
+        let b = merge_close_entries(&palette, &samples, 0.02);
+        assert_eq!(a, b);
+        assert_eq!(a, vec![[0.40, 0.0, 0.0]], "index tie-break keeps first");
     }
 }

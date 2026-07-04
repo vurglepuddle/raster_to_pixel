@@ -19,9 +19,13 @@ use std::sync::{Arc, Mutex};
 
 use image::{ImageFormat, RgbaImage};
 use raster_to_pixel::{
+    alpha::AlphaMode,
     downsample::CellMode,
+    morphology::CleanupPreset,
+    outline::OutlineMode,
     pipeline::{
-        self, Config, Dither, PaletteChoice, DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
+        self, Config, Dither, PaletteChoice, Quantizer, DEFAULT_BG_TOLERANCE,
+        DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
     },
 };
 
@@ -249,6 +253,14 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
         .grid_phase
         .map(|(x, y)| format!("{x},{y}"))
         .unwrap_or_default();
+    let confidence = result
+        .phase_confidence
+        .map(|v| format!("{v:.2}"))
+        .unwrap_or_default();
+    let auto_colors = result
+        .auto_colors
+        .map(|v| v.to_string())
+        .unwrap_or_default();
     let palette_hex: String = result
         .palette
         .iter()
@@ -262,6 +274,9 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
         format!("X-Palette-Len: {}", result.palette_len),
         format!("X-Detected-Pixel-Size: {detected}"),
         format!("X-Grid-Phase: {phase}"),
+        format!("X-Phase-Confidence: {confidence}"),
+        format!("X-Auto-Colors: {auto_colors}"),
+        format!("X-Cleanup-Removed: {}", result.cleanup.total()),
         format!("X-Palette: {palette_hex}"),
     ];
     if !preview {
@@ -297,6 +312,28 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         "bayer8" => Dither::Bayer8,
         _ => Dither::None,
     };
+    let alpha_mode = match get("alphaMode").unwrap_or("preserve") {
+        "binary" => AlphaMode::Binary,
+        "bgfill" | "background-fill" => AlphaMode::BackgroundFill,
+        "key" | "color-key" => AlphaMode::ColorKey,
+        _ => AlphaMode::Preserve,
+    };
+    let cleanup = match get("cleanup").unwrap_or("none") {
+        "conservative" => CleanupPreset::Conservative,
+        "balanced" => CleanupPreset::Balanced,
+        "aggressive" => CleanupPreset::Aggressive,
+        _ => CleanupPreset::None,
+    };
+    let color_key = get("colorKey").and_then(parse_hex_color);
+    let quantizer = match get("quantizer").unwrap_or("kmeans") {
+        "wu" => Quantizer::Wu,
+        _ => Quantizer::KMeans,
+    };
+    let outline = match get("outline").unwrap_or("none") {
+        "repair" => OutlineMode::Repair,
+        "enforce" => OutlineMode::Enforce,
+        _ => OutlineMode::None,
+    };
 
     Config {
         size: parse_or::<u32>(get("size"), 64).max(1),
@@ -319,6 +356,18 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
             .clamp(0.0, 1.0),
         shadow_collapse: parse_or::<f32>(get("shadowCollapse"), DEFAULT_SHADOW_COLLAPSE)
             .clamp(0.0, 1.0),
+        alpha_mode,
+        bg_tolerance: parse_or::<f32>(get("bgTolerance"), DEFAULT_BG_TOLERANCE).clamp(0.0, 1.0),
+        color_key,
+        cleanup,
+        protect_details: !matches!(get("protectDetails"), Some("false" | "0" | "off")),
+        auto_colors: matches!(get("autoColors"), Some("true" | "on" | "1")),
+        phase_x: get("phaseX").and_then(|s| s.parse().ok()),
+        phase_y: get("phaseY").and_then(|s| s.parse().ok()),
+        quantizer,
+        palette_merge: parse_or::<f32>(get("paletteMerge"), 0.0).clamp(0.0, 1.0),
+        contrast_expansion: parse_or::<u32>(get("contrastExpansion"), 0).min(4),
+        outline,
         compare: if preview {
             false
         } else {
@@ -329,6 +378,16 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
 
 fn parse_or<T: std::str::FromStr>(v: Option<&str>, default: T) -> T {
     v.and_then(|s| s.parse().ok()).unwrap_or(default)
+}
+
+/// Parse "RRGGBB"/"#RRGGBB"; None on anything malformed.
+fn parse_hex_color(text: &str) -> Option<[u8; 3]> {
+    let t = text.trim().trim_start_matches('#');
+    if t.len() != 6 || !t.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(t, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
 fn parse_form(body: &str) -> HashMap<String, String> {

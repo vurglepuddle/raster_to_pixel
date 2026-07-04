@@ -13,6 +13,22 @@ Local planning notes. This file is intentionally ignored by git for now.
 - Adaptive palette building collapses very light, low-chroma generated white noise into one canonical white before k-means.
 - Adaptive palette building also collapses very dark generated noise into the darkest matching source color before k-means.
 - Palette cleanup thresholds are exposed through CLI flags and GUI sliders.
+- Fable batch pass (2026-07): alpha modes (`preserve`/`binary`/`background-fill`/`color-key`)
+  with edge flood fill + transparent-RGB decontamination in `src/alpha.rs`; opt-in
+  morphology presets (pinholes/halo/jaggy/orphans, protect-details default on) in
+  `src/morphology.rs`; dominant cells use two shifted 5-bit bucket grids and snap to a
+  real cell color; `--auto-colors` with preset clamping; snap-grid phase confidence
+  (pairwise phase scoring) + manual `--phase-x`/`--phase-y`; `--debug-json` /
+  `--debug-grid`; GUI: alpha mode/tolerance/key controls, Cleanup presets, Auto colors
+  chip, conf readout, pixel-grid overlay toggle. NOT yet field-tested on real images.
+- Fable batch pass 2 (2026-07): Wu 1992 quantizer on an Oklab lattice (`src/wu.rs`,
+  `--quantizer wu`); post-quantize palette merge keeping heaviest anchors
+  (`kmeans::merge_close_entries`, `--palette-merge`); opt-in contrast expansion
+  protecting 1px details (`src/enhance.rs`, `--contrast-expansion`, GUI "Detail
+  guard"); outline repair/enforce with auto-detected dark outline color
+  (`src/outline.rs`, `--outline`). All wired through Config + CLI + GUI. NOT yet
+  field-tested; tests written but not executed (compile-checked only).
+- Handed to Codex: palette export/import (.hex/.gpl/PNG strip), batch CLI folder mode.
 
 ## Reference Repo Scan
 
@@ -206,6 +222,22 @@ Goal: help with the last annoying artifacts without making the default destructi
 - Export palette files and manifest metadata.
 - Performance cap for high color counts or preview k-means iterations.
 
+## Deliberately Unfinished Plug-in Points
+
+- Elastic cut walking (SpriteFusion-style): skipped on purpose — every conservative
+  variant still risks distorting geometry. If ever added, hang it off
+  `pipeline::GridPlan::sampling` by replacing the uniform `SamplingGrid` with
+  per-axis cut lists; `downsample_grid_with_dominant_threshold` would take
+  `&[f64]` cut positions instead of origin+step.
+- Sobel edge-aware cell picking still plugs into `downsample::reduce_cell` (see
+  module doc comment).
+- Dark-matte halo cleanup: `morphology::halo_clean` only targets light neutrals so
+  intentional dark outlines survive; a user-supplied matte color would generalize it.
+- GUI does not expose `--phase-x`/`--phase-y` yet (the server already parses
+  `phaseX`/`phaseY` form fields).
+
 ## Next Best Step
 
-Next likely pass: add cleanup morph/jaggy passes.
+Field-test the batch pass on real generated images: background-fill tolerances,
+cleanup presets on fuzzy sprites, auto-colors choices, and whether the new pairwise
+phase scoring still snaps `source_fuzzy.png --pixel-size 4` to phase `0,2`.
