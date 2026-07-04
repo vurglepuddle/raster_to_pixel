@@ -2,6 +2,8 @@
 
 # Local experiment images and generated outputs.
 /*.png
+/examples/
+/design/
 
 # Keep project notes/plans local, but allow the public README.
 *.md

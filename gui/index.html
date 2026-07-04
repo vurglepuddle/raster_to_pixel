@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixeline</title>
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    background:var(--backdrop);color:var(--text);overflow:hidden;
+    font-family:system-ui,-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  :root{
+    --backdrop:#0a0a0f; --bg:#141319; --panel:#191821; --panel-2:#221f2c;
+    --stage:#0d0c12; --line:#2b2938; --text:#e9e8f0; --text-dim:#a4a2b6; --text-mute:#6c6a80;
+    --check-a:#191822; --check-b:#232130; --accent:#e0a35c; --on-accent:#16120a; --err:#e0736b;
+  }
+  [data-theme="light"]{
+    --backdrop:#e8e6ef; --bg:#f6f5fa; --panel:#ffffff; --panel-2:#eeecf4;
+    --stage:#e6e4ee; --line:#e1dfea; --text:#1a1922; --text-dim:#565469; --text-mute:#8b899d;
+    --check-a:#ffffff; --check-b:#e7e5ef; --accent:#7b62d6; --on-accent:#ffffff; --err:#c0392b;
+  }
+  input[type=range]{accent-color:var(--accent);height:4px;width:100%;}
+  select:focus,input:focus,textarea:focus{outline:1px solid color-mix(in srgb,var(--accent) 60%,transparent);}
+  @keyframes rtpPulse{0%,100%{opacity:.45}50%{opacity:1}}
+
+  #app{display:flex;flex-direction:column;height:100vh;background:var(--bg);}
+  .bar{display:flex;align-items:center;gap:16px;padding:0 16px;height:46px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;}
+  .brand{display:flex;align-items:center;gap:10px;}
+  .dot{width:13px;height:13px;border-radius:3px;background:var(--accent);}
+  .brandname{font-weight:700;font-size:13px;letter-spacing:.14em;font-family:ui-monospace,Menlo,monospace;}
+  .meta{font-size:11px;color:var(--text-mute);border-left:1px solid var(--line);padding-left:10px;font-family:ui-monospace,monospace;}
+  .spacer{flex:1;}
+  .ghost{background:transparent;border:1px solid var(--line);color:var(--text-dim);border-radius:7px;padding:5px 11px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;}
+  .togglegrp{display:flex;gap:3px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:3px;}
+
+  .main{display:flex;flex:1;min-height:0;}
+  .stage{position:relative;flex:1;min-width:0;display:grid;place-items:center;overflow:auto;
+    background:repeating-conic-gradient(var(--check-a) 0% 25%,var(--check-b) 0% 50%) 50% / 22px 22px;}
+  #preview{image-rendering:pixelated;box-shadow:0 6px 30px rgba(0,0,0,.45);border-radius:2px;display:none;}
+  #empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--text-mute);font-size:13px;pointer-events:none;}
+  #empty b{color:var(--text-dim);font-size:15px;}
+  .overlay{position:absolute;display:flex;align-items:center;gap:7px;background:color-mix(in srgb,var(--panel) 82%,transparent);
+    backdrop-filter:blur(6px);border:1px solid var(--line);border-radius:9px;padding:5px 10px;}
+  .rail{width:326px;flex-shrink:0;border-left:1px solid var(--line);background:var(--panel);overflow-y:auto;padding:14px 16px;}
+  .sec{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin:18px 0 8px;}
+  .sec.first{margin-top:0;}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);}
+  .row.nb{border-bottom:none;}
+  .row .lbl{font-size:12px;color:var(--text-dim);white-space:nowrap;}
+  .num{width:74px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 7px;
+    font:inherit;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;}
+  select{background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 7px;font:inherit;font-size:12px;}
+  textarea{width:100%;height:76px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px;
+    font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;}
+  .val{font-family:ui-monospace,monospace;font-size:12px;color:var(--text);min-width:30px;text-align:right;font-variant-numeric:tabular-nums;}
+  .dim{opacity:.4;pointer-events:none;}
+  .segwrap{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;}
+  .seg-join{flex:1;padding:7px 4px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;border:none;border-right:1px solid var(--line);
+    background:transparent;color:var(--text-dim);transition:all .12s;white-space:nowrap;}
+  .seg-join:last-child{border-right:none;}
+  .seg-join.on{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent);}
+  .seg{padding:4px 8px;font:inherit;font-size:11px;font-weight:600;border-radius:6px;cursor:pointer;white-space:nowrap;transition:all .12s;
+    border:1px solid var(--line);background:transparent;color:var(--text-dim);}
+  .seg.on{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);}
+
+  .foot{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:0 18px;height:56px;border-top:1px solid var(--line);background:var(--panel);flex-shrink:0;}
+  .status{display:flex;align-items:center;gap:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);font-variant-numeric:tabular-nums;flex-wrap:wrap;}
+  .status .k{color:var(--text-mute);}
+  .swatches{display:flex;align-items:center;gap:4px;}
+  .swatch{width:14px;height:14px;border-radius:3px;border:1px solid rgba(0,0,0,.28);}
+  .exportgrp{display:flex;align-items:center;gap:12px;}
+  .stepper{display:flex;align-items:center;gap:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:2px;}
+  .stepper button{width:24px;height:24px;border:none;background:transparent;color:var(--text);font-size:15px;cursor:pointer;border-radius:5px;}
+  .save{background:var(--accent);border:none;color:var(--on-accent);border-radius:8px;padding:9px 18px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;}
+  .caplabel{font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:.07em;font-weight:700;}
+  .toast{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:var(--accent);color:var(--on-accent);font-weight:700;font-size:12px;padding:8px 16px;border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.4);}
+  .accentpop{position:absolute;top:44px;right:12px;z-index:31;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px;box-shadow:0 18px 44px rgba(0,0,0,.45);width:184px;}
+  .accentgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;}
+  .accentgrid button{width:100%;height:30px;border-radius:7px;cursor:pointer;padding:0;border:2px solid color-mix(in srgb,var(--line) 65%,transparent);}
+  .accentgrid button.on{border:2px solid var(--text);}
+  .accentauto{margin-top:12px;width:100%;padding:7px;font:inherit;font-size:11px;font-weight:600;border-radius:8px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text-dim);}
+  .accentauto.on{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent);}
+  .customerr{margin-top:5px;font-size:11px;color:var(--err);}
+</style>
+</head>
+<body>
+<div id="app" data-theme="dark">
+  <!-- header -->
+  <div class="bar">
+    <div class="brand">
+      <div class="dot"></div>
+      <span class="brandname">PIXELINE</span>
+      <span class="meta" id="meta">no image</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="ghost" id="openBtn">Open…</button>
+    <div class="togglegrp" id="themeGrp"></div>
+    <div style="position:relative;">
+      <button class="ghost" id="accentBtn" title="Accent color" style="width:30px;height:30px;display:grid;place-items:center;padding:0;">
+        <span id="accentChip" style="width:16px;height:16px;border-radius:5px;background:var(--accent);"></span>
+      </button>
+      <div id="accentPop" class="accentpop" style="display:none;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-mute);margin-bottom:11px;">Accent</div>
+        <div class="accentgrid" id="accentGrid"></div>
+        <button class="accentauto" id="accentAuto">Auto · match theme</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- stage -->
+    <div class="stage" id="stage">
+      <img id="preview" alt="preview">
+      <div id="empty"><b>Drop an image here</b><span>or click “Open…” — PNG, JPG, or WebP</span></div>
+      <div class="overlay" id="renderInd" style="top:14px;left:14px;display:none;">
+        <div style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:rtpPulse 1s ease-in-out infinite;"></div>
+        <span style="font-size:11px;color:var(--text-dim);font-weight:600;">rendering…</span>
+      </div>
+      <div class="overlay" id="baGrp" style="top:14px;right:14px;padding:3px;gap:3px;"></div>
+      <div class="overlay" id="zoomBox" style="bottom:14px;left:14px;padding:5px 8px;gap:8px;">
+        <span style="font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text-mute);text-transform:uppercase;">Zoom</span>
+        <div style="display:flex;gap:3px;" id="zoomGrp"></div>
+      </div>
+      <div class="toast" id="toast" style="display:none;"></div>
+    </div>
+
+    <!-- controls -->
+    <div class="rail">
+      <div class="sec first">Grid &amp; Size</div>
+      <div class="segwrap" id="sizeModeGrp" style="margin-bottom:4px;"></div>
+      <div class="row" id="rowSize"><span class="lbl">Target size</span>
+        <input type="number" min="1" class="num" id="inSize"></div>
+      <div class="row" id="rowPixel"><span class="lbl">Pixel size</span>
+        <input type="number" min="1" step="0.5" class="num" id="inPixel"></div>
+      <div class="row nb" id="rowDetected" style="display:none;"><span class="lbl" style="color:var(--text-mute);">Detected</span>
+        <span class="val" style="color:var(--accent);" id="detectedVal">— px</span></div>
+
+      <div class="sec">Palette</div>
+      <div class="row nb"><span class="lbl">Preset</span>
+        <select id="inPalette" style="width:150px;">
+          <option value="adaptive">Adaptive</option>
+          <option value="pico8">PICO-8</option>
+          <option value="gameboy">Game Boy</option>
+          <option value="sweetie16">Sweetie 16</option>
+          <option value="custom">Custom…</option>
+        </select></div>
+      <div id="colorsBlock">
+        <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Colors</span>
+          <input type="number" min="1" max="512" class="num" id="inColors"></div>
+        <div id="colorPresets" style="display:flex;flex-wrap:wrap;gap:4px;padding-bottom:6px;"></div>
+      </div>
+      <div id="customWrap" style="display:none;padding-top:8px;">
+        <textarea id="inCustom" placeholder="#1a1c2c&#10;5d275d&#10;b13e53 …"></textarea>
+        <div class="customerr" id="customErr" style="display:none;"></div>
+      </div>
+
+      <div class="sec">Downsampling</div>
+      <div class="segwrap" id="cellGrp"></div>
+
+      <div class="sec">Dither</div>
+      <div class="segwrap" id="ditherGrp"></div>
+      <div class="row nb" id="rowStrength" style="padding-top:10px;"><span class="lbl">Strength</span>
+        <input type="range" min="0" max="1" step="0.05" id="inStrength"><span class="val" id="strengthVal">0.35</span></div>
+
+      <div class="sec">Alpha</div>
+      <div class="row nb"><span class="lbl">Threshold</span>
+        <input type="range" min="0" max="255" id="inAlpha"><span class="val" id="alphaVal">128</span></div>
+    </div>
+  </div>
+
+  <!-- footer -->
+  <div class="foot">
+    <div class="status">
+      <span><span class="k">out </span><span id="stOut">—</span></span>
+      <span><span class="k">pal </span><span id="stPal">—</span></span>
+      <span><span class="k">px </span><span id="stPx">—</span></span>
+      <div class="swatches" id="stSwatches"></div>
+    </div>
+    <div class="exportgrp">
+      <span class="caplabel">Scale</span>
+      <div class="stepper"><button id="scaleDec">−</button><span class="val" id="scaleVal">1×</span><button id="scaleInc">+</button></div>
+      <button class="seg" id="compareBtn">Compare Off</button>
+      <button class="save" id="saveBtn">Save PNG</button>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="image/*" style="display:none;">
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, isNaN(v) ? a : v));
+
+const state = {
+  theme: 'dark', accent: null,
+  fileName: '', srcW: 0, srcH: 0, autoPixelSize: null, hasImage: false,
+  sizeMode: 'size', size: 64, pixelSize: 6,
+  colors: 16, palette: 'adaptive', customHex: '',
+  cell: 'detail', dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
+  scale: 1, compare: false, zoom: 6, showOriginal: false,
+  outW: 0, outH: 0, paletteLen: 0, rendering: false,
+  swatches: [], customError: '',
+};
+
+let previewURL = null, originalURL = null;
+let previewSeq = 0, previewTimer = null, previewController = null;
+
+// ── segmented groups ────────────────────────────────────────────────────────
+function buildSeg(container, opts, cls, onPick) {
+  container.innerHTML = '';
+  container._btns = opts.map(([val, label]) => {
+    const b = document.createElement('button');
+    b.textContent = label; b.dataset.value = String(val); b.className = cls;
+    b.onclick = () => onPick(val);
+    container.appendChild(b); return b;
+  });
+}
+function segActive(container, active) {
+  container._btns.forEach(b => b.classList.toggle('on', b.dataset.value === String(active)));
+}
+
+buildSeg($('sizeModeGrp'), [['size','Fixed'],['pixel','Pixel'],['auto','Auto']], 'seg-join', v => set({ sizeMode: v }));
+buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant']], 'seg-join', v => set({ cell: v }));
+buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
+buildSeg($('themeGrp'), [['light','Light'],['dark','Dark']], 'seg', v => { state.theme = v; savePrefs(); applyTheme(); });
+buildSeg($('baGrp'), [['result','Result'],['original','Original']], 'seg', v => { state.showOriginal = (v === 'original'); updatePreviewImg(); render(); });
+buildSeg($('zoomGrp'), [[1,'1×'],[2,'2×'],[4,'4×'],[6,'6×'],[8,'8×'],[12,'12×'],[16,'16×']], 'seg', v => { state.zoom = v; updatePreviewImg(); render(); });
+buildSeg($('colorPresets'), [[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg', v => set({ colors: v }));
+
+// ── inputs ──────────────────────────────────────────────────────────────────
+$('inSize').oninput = e => set({ size: clamp(parseInt(e.target.value), 1, Math.max(state.srcW, state.srcH) || 4096) });
+$('inPixel').oninput = e => set({ pixelSize: clamp(parseFloat(e.target.value), 1, 64) });
+$('inColors').oninput = e => set({ colors: clamp(parseInt(e.target.value), 1, 512) });
+$('inStrength').oninput = e => set({ ditherStrength: clamp(parseFloat(e.target.value), 0, 1) });
+$('inAlpha').oninput = e => set({ alphaThreshold: clamp(parseInt(e.target.value), 0, 255) });
+$('inCustom').oninput = e => set({ customHex: e.target.value });
+$('inPalette').onchange = e => set({ palette: e.target.value });
+$('scaleDec').onclick = () => set({ scale: clamp(state.scale - 1, 1, 16) }, false);
+$('scaleInc').onclick = () => set({ scale: clamp(state.scale + 1, 1, 16) }, false);
+$('compareBtn').onclick = () => set({ compare: !state.compare }, false);
+$('saveBtn').onclick = doExport;
+$('openBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => loadFile(e.target.files && e.target.files[0]);
+
+// scale & compare only affect export, not the preview, so no re-render of preview needed
+function set(patch, preview = true) {
+  Object.assign(state, patch);
+  render();
+  if (preview) schedulePreview();
+}
+
+// drag & drop
+const stage = $('stage');
+['dragover','dragenter'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); }));
+stage.addEventListener('drop', e => {
+  e.preventDefault();
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+
+// accent menu
+$('accentBtn').onclick = () => { const p = $('accentPop'); p.style.display = p.style.display === 'none' ? 'block' : 'none'; };
+document.addEventListener('click', e => {
+  if (!$('accentPop').contains(e.target) && e.target !== $('accentBtn') && !$('accentBtn').contains(e.target))
+    $('accentPop').style.display = 'none';
+});
+const ACCENTS = [['#e0a35c','Amber'],['#8f7be0','Lilac'],['#5b83d0','Dusk blue'],['#6fb3d6','Icy sky'],['#d67a9c','Sunset rose'],['#e0785a','Ember']];
+buildSeg; // (noop ref)
+(function buildAccents(){
+  const g = $('accentGrid'); g.innerHTML = '';
+  g._btns = ACCENTS.map(([hex,name]) => {
+    const b = document.createElement('button'); b.title = name; b.style.background = hex; b.dataset.value = hex;
+    b.onclick = () => { state.accent = hex; $('accentPop').style.display = 'none'; savePrefs(); applyTheme(); };
+    g.appendChild(b); return b;
+  });
+})();
+$('accentAuto').onclick = () => { state.accent = null; $('accentPop').style.display = 'none'; savePrefs(); applyTheme(); };
+
+// ── prefs / theme / accent ──────────────────────────────────────────────────
+function loadPrefs() { try { return JSON.parse(localStorage.getItem('pixeline.prefs') || '{}'); } catch (e) { return {}; } }
+function savePrefs() { try { localStorage.setItem('pixeline.prefs', JSON.stringify({ accent: state.accent, theme: state.theme })); } catch (e) {} }
+function accentColor() { return state.accent || (state.theme === 'dark' ? '#e0a35c' : '#7b62d6'); }
+function onAccentFor(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return '#16120a';
+  const n = parseInt(m[1], 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return lum > 0.62 ? '#16120a' : '#ffffff';
+}
+function applyTheme() {
+  const app = $('app');
+  app.dataset.theme = state.theme;
+  const a = accentColor();
+  app.style.setProperty('--accent', a);
+  app.style.setProperty('--on-accent', onAccentFor(a));
+  render();
+}
+
+// ── dims / preview ──────────────────────────────────────────────────────────
+function computeDims() {
+  const s = state, long = Math.max(s.srcW, s.srcH) || 1;
+  let outLong;
+  if (s.sizeMode === 'size') outLong = s.size;
+  else { const px = s.sizeMode === 'pixel' ? s.pixelSize : (s.autoPixelSize || s.pixelSize); outLong = Math.max(1, Math.round(long / px)); }
+  let ow, oh;
+  if (s.srcW >= s.srcH) { ow = outLong; oh = Math.max(1, Math.round(outLong * s.srcH / s.srcW)); }
+  else { oh = outLong; ow = Math.max(1, Math.round(outLong * s.srcW / s.srcH)); }
+  return { ow: Math.min(ow, s.srcW || ow), oh: Math.min(oh, s.srcH || oh) };
+}
+function updatePreviewImg() {
+  const img = $('preview');
+  const d = state.outW ? { ow: state.outW, oh: state.outH } : computeDims();
+  img.style.width = (d.ow * state.zoom) + 'px';
+  img.style.height = (d.oh * state.zoom) + 'px';
+  if (state.showOriginal) { img.src = originalURL || ''; img.style.imageRendering = 'auto'; }
+  else { img.src = previewURL || ''; img.style.imageRendering = 'pixelated'; }
+  img.style.display = state.hasImage ? 'block' : 'none';
+  $('empty').style.display = state.hasImage ? 'none' : 'flex';
+}
+
+function settingsParams() {
+  const p = new URLSearchParams();
+  ['sizeMode','size','pixelSize','colors','palette','customHex','cell','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
+  p.set('compare', state.compare ? 'true' : 'false');
+  return p;
+}
+
+function schedulePreview() {
+  if (!state.hasImage) return;
+  state.rendering = true; $('renderInd').style.display = 'flex';
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, 150);
+}
+function cancelPreview() {
+  clearTimeout(previewTimer);
+  previewSeq++;
+  if (previewController) {
+    previewController.abort();
+    previewController = null;
+  }
+  state.rendering = false;
+}
+async function runPreview() {
+  const seq = ++previewSeq;
+  if (previewController) previewController.abort();
+  const controller = new AbortController();
+  previewController = controller;
+  try {
+    const res = await fetch('/api/preview', { method: 'POST', body: settingsParams(), signal: controller.signal });
+    if (seq !== previewSeq) return;
+    if (!res.ok) {
+      const msg = await res.json().then(j => j.error).catch(() => 'preview failed (' + res.status + ')');
+      if (state.palette === 'custom') { state.customError = msg; }
+      else showToast(msg, true);
+      state.rendering = false; render(); return;
+    }
+    state.customError = '';
+    state.outW = +res.headers.get('X-Out-Width') || state.outW;
+    state.outH = +res.headers.get('X-Out-Height') || state.outH;
+    state.paletteLen = +res.headers.get('X-Palette-Len') || 0;
+    const palHex = res.headers.get('X-Palette') || '';
+    state.swatches = palHex ? palHex.split(',').filter(Boolean).map(h => '#' + h) : [];
+    const blob = await res.blob();
+    if (seq !== previewSeq) return;
+    if (previewURL) URL.revokeObjectURL(previewURL);
+    previewURL = URL.createObjectURL(blob);
+    state.rendering = false;
+    if (previewController === controller) previewController = null;
+    updatePreviewImg(); render();
+  } catch (e) {
+    if (e.name !== 'AbortError') { showToast(String(e), true); state.rendering = false; render(); }
+  }
+}
+
+async function loadFile(file) {
+  if (!file) return;
+  cancelPreview();
+  state.fileName = file.name;
+  state.hasImage = false; state.showOriginal = false; state.outW = 0; state.outH = 0;
+  state.paletteLen = 0; state.swatches = []; state.customError = '';
+  if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
+  if (originalURL) URL.revokeObjectURL(originalURL);
+  originalURL = URL.createObjectURL(file);
+  render(); updatePreviewImg();
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/session', { method: 'POST', body: buf });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); showToast(j.error || 'load failed', true); return; }
+    const meta = await res.json();
+    state.srcW = meta.srcWidth; state.srcH = meta.srcHeight;
+    state.autoPixelSize = (meta.autoPixelSize == null) ? null : meta.autoPixelSize;
+    state.hasImage = true; state.showOriginal = false; state.outW = 0; state.outH = 0;
+    render(); updatePreviewImg(); schedulePreview();
+  } catch (e) { showToast(String(e), true); }
+}
+
+async function doExport() {
+  if (!state.hasImage) return;
+  try {
+    const res = await fetch('/api/export', { method: 'POST', body: settingsParams() });
+    if (!res.ok) { const j = await res.json().catch(() => ({})); showToast(j.error || 'export failed', true); return; }
+    const blob = await res.blob();
+    const name = (state.fileName.replace(/\.[^.]+$/, '') || 'pixeline') + '_' + (state.outW || computeDims().ow) + 'px.png';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    showToast('Saved ' + name);
+  } catch (e) { showToast(String(e), true); }
+}
+
+let toastTimer = null;
+function showToast(msg, isErr) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  t.style.background = isErr ? 'var(--err)' : 'var(--accent)';
+  t.style.color = isErr ? '#fff' : 'var(--on-accent)';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.style.display = 'none'; }, isErr ? 3200 : 1600);
+}
+
+// ── render (values, disabled states, status) ────────────────────────────────
+function setVal(el, v) { if (document.activeElement !== el && el.value != v) el.value = v; }
+function render() {
+  const s = state;
+  $('meta').textContent = s.hasImage ? (s.fileName + ' · ' + s.srcW + '×' + s.srcH) : 'no image';
+
+  segActive($('sizeModeGrp'), s.sizeMode);
+  segActive($('cellGrp'), s.cell);
+  segActive($('ditherGrp'), s.dither);
+  segActive($('themeGrp'), s.theme);
+  segActive($('baGrp'), s.showOriginal ? 'original' : 'result');
+  segActive($('zoomGrp'), s.zoom);
+  segActive($('colorPresets'), s.colors);
+
+  setVal($('inSize'), s.size);
+  setVal($('inPixel'), s.pixelSize);
+  setVal($('inColors'), s.colors);
+  setVal($('inStrength'), s.ditherStrength);
+  setVal($('inAlpha'), s.alphaThreshold);
+  setVal($('inCustom'), s.customHex);
+  $('inPalette').value = s.palette;
+  $('strengthVal').textContent = s.ditherStrength.toFixed(2);
+  $('alphaVal').textContent = s.alphaThreshold;
+  $('scaleVal').textContent = s.scale + '×';
+  $('compareBtn').textContent = 'Compare ' + (s.compare ? 'On' : 'Off');
+  $('compareBtn').classList.toggle('on', s.compare);
+
+  $('rowSize').classList.toggle('dim', s.sizeMode !== 'size');
+  $('rowPixel').classList.toggle('dim', s.sizeMode !== 'pixel');
+  $('colorsBlock').classList.toggle('dim', s.palette !== 'adaptive');
+  $('rowStrength').classList.toggle('dim', s.dither === 'none');
+  $('rowDetected').style.display = s.sizeMode === 'auto' ? 'flex' : 'none';
+  $('detectedVal').textContent = (s.autoPixelSize == null ? '—' : s.autoPixelSize.toFixed(1)) + ' px';
+  $('customWrap').style.display = s.palette === 'custom' ? 'block' : 'none';
+  $('customErr').style.display = s.customError ? 'block' : 'none';
+  $('customErr').textContent = s.customError;
+
+  $('renderInd').style.display = s.rendering ? 'flex' : 'none';
+  $('baGrp').style.display = s.hasImage ? 'flex' : 'none';
+
+  // status
+  $('stOut').textContent = s.hasImage ? ((s.outW || computeDims().ow) + '×' + (s.outH || computeDims().oh)) : '—';
+  $('stPal').textContent = s.hasImage ? s.paletteLen : '—';
+  $('stPx').textContent = (s.autoPixelSize == null) ? '—' : s.autoPixelSize.toFixed(1);
+  const sw = $('stSwatches'); sw.innerHTML = '';
+  s.swatches.slice(0, 16).forEach(hex => {
+    const d = document.createElement('div'); d.className = 'swatch'; d.style.background = hex; sw.appendChild(d);
+  });
+
+  // accent menu active markers
+  if ($('accentGrid')._btns) $('accentGrid')._btns.forEach(b => b.classList.toggle('on', s.accent === b.dataset.value));
+  $('accentAuto').classList.toggle('on', s.accent === null);
+}
+
+// ── init ────────────────────────────────────────────────────────────────────
+(function init() {
+  const p = loadPrefs();
+  if (p.accent !== undefined) state.accent = p.accent;
+  if (p.theme === 'light' || p.theme === 'dark') state.theme = p.theme;
+  applyTheme();   // calls render()
+})();
+</script>
+</body>
+</html>
