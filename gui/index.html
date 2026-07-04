@@ -216,6 +216,8 @@
 
       <div class="sec">Cleanup</div>
       <div class="segwrap" id="cleanupGrp" style="margin-bottom:4px;"></div>
+      <div class="row" id="rowCleanupChanged"><span class="lbl">Changed</span>
+        <span class="val" id="cleanupChangedVal">0 px</span></div>
       <label class="row nb checkrow" id="rowProtect"><span class="lbl">Protect 1px details</span><input type="checkbox" id="inProtect"></label>
 
       <div class="sec">Outline</div>
@@ -265,7 +267,7 @@ const state = {
   cleanup: 'none', protectDetails: true, outline: 'none',
   quantizer: 'kmeans', paletteMerge: 0, contrastExpansion: 0,
   scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false, showGrid: false,
-  outW: 0, outH: 0, paletteLen: 0, gridPhase: '', phaseConf: '', autoColorsChosen: null, rendering: false,
+  outW: 0, outH: 0, paletteLen: 0, gridPhase: '', phaseConf: '', autoColorsChosen: null, cleanupRemoved: 0, rendering: false,
   swatches: [], customError: '',
 };
 
@@ -538,6 +540,7 @@ async function runPreview() {
     state.paletteLen = +res.headers.get('X-Palette-Len') || 0;
     state.gridPhase = res.headers.get('X-Grid-Phase') || '';
     state.phaseConf = res.headers.get('X-Phase-Confidence') || '';
+    state.cleanupRemoved = +res.headers.get('X-Cleanup-Removed') || 0;
     const autoChosen = res.headers.get('X-Auto-Colors');
     state.autoColorsChosen = autoChosen ? +autoChosen : null;
     const palHex = res.headers.get('X-Palette') || '';
@@ -559,7 +562,7 @@ async function loadFile(file) {
   cancelPreview();
   state.fileName = file.name;
   state.hasImage = false; state.showOriginal = false; state.outW = 0; state.outH = 0;
-  state.paletteLen = 0; state.gridPhase = ''; state.swatches = []; state.customError = '';
+  state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.swatches = []; state.customError = '';
   resetPan();
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   if (originalURL) URL.revokeObjectURL(originalURL);
@@ -692,6 +695,8 @@ function render() {
   $('rowStrength').classList.toggle('dim', s.dither === 'none');
   $('rowTolerance').classList.toggle('dim', s.alphaMode !== 'bgfill' && s.alphaMode !== 'key');
   $('rowKeyColor').style.display = s.alphaMode === 'key' ? 'flex' : 'none';
+  $('rowCleanupChanged').classList.toggle('dim', s.cleanup === 'none');
+  $('cleanupChangedVal').textContent = s.cleanup === 'none' ? '—' : s.cleanupRemoved + ' px';
   $('rowProtect').classList.toggle('dim', s.cleanup === 'none');
   $('rowDetected').style.display = s.sizeMode === 'auto' ? 'flex' : 'none';
   $('detectedVal').textContent = (s.autoPixelSize == null ? '—' : s.autoPixelSize.toFixed(1)) + ' px';
