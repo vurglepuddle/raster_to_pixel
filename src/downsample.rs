@@ -121,8 +121,13 @@ fn reduce_box(cell: &[WeightedPixel], a_sum: f32, a_mean: f32) -> [f32; 4] {
 }
 
 fn reduce_median(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
-    let mut out = [0f32; 4];
-    for (ch, value) in out.iter_mut().take(3).enumerate() {
+    let candidates: Vec<&WeightedPixel> = cell.iter().filter(|p| p.rgba[3] > 0.0).collect();
+    if candidates.is_empty() {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+
+    let mut target = [0f32; 3];
+    for (ch, value) in target.iter_mut().enumerate() {
         let mut vals: Vec<(f32, f32)> = cell
             .iter()
             .filter(|p| p.rgba[3] > 0.0)
@@ -131,8 +136,34 @@ fn reduce_median(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
         vals.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         *value = weighted_median(&vals);
     }
-    out[3] = a_mean;
-    out
+
+    // Per-channel medians are robust, but can synthesize colors that were never
+    // present in the cell (for example red + green + white -> yellow). Snap the
+    // median target to the nearest real source color so median/detail modes do
+    // not create neon artifacts along fuzzy edges.
+    let mut best = candidates[0];
+    let mut best_dist = f32::INFINITY;
+    let mut best_weight = -1.0f32;
+    for p in candidates {
+        let dist = p
+            .rgba
+            .iter()
+            .take(3)
+            .zip(target)
+            .map(|(a, b)| {
+                let d = *a - b;
+                d * d
+            })
+            .sum::<f32>();
+        let weight = p.weight * p.rgba[3];
+        if dist < best_dist || ((dist - best_dist).abs() <= f32::EPSILON && weight > best_weight) {
+            best = p;
+            best_dist = dist;
+            best_weight = weight;
+        }
+    }
+
+    [best.rgba[0], best.rgba[1], best.rgba[2], a_mean]
 }
 
 fn reduce_dominant(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
@@ -254,6 +285,23 @@ mod tests {
         src[2] = 1.0;
         let out = downsample(&src, 2, 2, 1, 1, CellMode::Dominant);
         assert!((out[0] - 0.1).abs() < 1e-5, "got {out:?}");
+    }
+
+    #[test]
+    fn median_picks_real_color_not_per_channel_artifact() {
+        // Old per-channel median produced yellow [1, 1, 0], which was not present.
+        let src = vec![
+            1.0, 0.0, 0.0, 1.0, //
+            0.0, 1.0, 0.0, 1.0, //
+            1.0, 1.0, 1.0, 1.0,
+        ];
+        let out = downsample(&src, 3, 1, 1, 1, CellMode::Median);
+        let color = [out[0], out[1], out[2]];
+        assert_ne!(color, [1.0, 1.0, 0.0], "got invented yellow: {out:?}");
+        assert!(
+            color == [1.0, 0.0, 0.0] || color == [0.0, 1.0, 0.0] || color == [1.0, 1.0, 1.0],
+            "median should snap to a real cell color, got {out:?}"
+        );
     }
 
     #[test]
