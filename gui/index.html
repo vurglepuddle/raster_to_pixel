@@ -57,6 +57,8 @@
     font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;}
   .val{font-family:ui-monospace,monospace;font-size:12px;color:var(--text);min-width:30px;text-align:right;font-variant-numeric:tabular-nums;}
   .dim{opacity:.4;pointer-events:none;}
+  .checkrow{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);}
+  .checkrow input{accent-color:var(--accent);}
   .segwrap{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;}
   .seg-join{flex:1;padding:7px 4px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;border:none;border-right:1px solid var(--line);
     background:transparent;color:var(--text-dim);transition:all .12s;white-space:nowrap;}
@@ -137,6 +139,7 @@
         <input type="number" min="1" step="0.5" class="num" id="inPixel"></div>
       <div class="row nb" id="rowDetected" style="display:none;"><span class="lbl" style="color:var(--text-mute);">Detected</span>
         <span class="val" style="color:var(--accent);" id="detectedVal">— px</span></div>
+      <label class="row nb checkrow"><span class="lbl">Snap grid</span><input type="checkbox" id="inSnap"></label>
 
       <div class="sec">Palette</div>
       <div class="row nb"><span class="lbl">Preset</span>
@@ -177,6 +180,7 @@
       <span><span class="k">out </span><span id="stOut">—</span></span>
       <span><span class="k">pal </span><span id="stPal">—</span></span>
       <span><span class="k">px </span><span id="stPx">—</span></span>
+      <span><span class="k">phase </span><span id="stPhase">-</span></span>
       <div class="swatches" id="stSwatches"></div>
     </div>
     <div class="exportgrp">
@@ -198,11 +202,11 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, isNaN(v) ? a : v));
 const state = {
   theme: 'dark', accent: null,
   fileName: '', srcW: 0, srcH: 0, autoPixelSize: null, hasImage: false,
-  sizeMode: 'size', size: 64, pixelSize: 6,
+  sizeMode: 'size', size: 64, pixelSize: 6, snapGrid: true,
   colors: 16, palette: 'adaptive', customHex: '',
   cell: 'detail', dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   scale: 1, compare: false, zoom: 6, showOriginal: false,
-  outW: 0, outH: 0, paletteLen: 0, rendering: false,
+  outW: 0, outH: 0, paletteLen: 0, gridPhase: '', rendering: false,
   swatches: [], customError: '',
 };
 
@@ -234,6 +238,7 @@ buildSeg($('colorPresets'), [[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[
 // ── inputs ──────────────────────────────────────────────────────────────────
 $('inSize').oninput = e => set({ size: clamp(parseInt(e.target.value), 1, Math.max(state.srcW, state.srcH) || 4096) });
 $('inPixel').oninput = e => set({ pixelSize: clamp(parseFloat(e.target.value), 1, 64) });
+$('inSnap').onchange = e => set({ snapGrid: e.target.checked });
 $('inColors').oninput = e => set({ colors: clamp(parseInt(e.target.value), 1, 512) });
 $('inStrength').oninput = e => set({ ditherStrength: clamp(parseFloat(e.target.value), 0, 1) });
 $('inAlpha').oninput = e => set({ alphaThreshold: clamp(parseInt(e.target.value), 0, 255) });
@@ -324,7 +329,7 @@ function updatePreviewImg() {
 
 function settingsParams() {
   const p = new URLSearchParams();
-  ['sizeMode','size','pixelSize','colors','palette','customHex','cell','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
+  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','cell','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
   p.set('compare', state.compare ? 'true' : 'false');
   return p;
 }
@@ -362,6 +367,7 @@ async function runPreview() {
     state.outW = +res.headers.get('X-Out-Width') || state.outW;
     state.outH = +res.headers.get('X-Out-Height') || state.outH;
     state.paletteLen = +res.headers.get('X-Palette-Len') || 0;
+    state.gridPhase = res.headers.get('X-Grid-Phase') || '';
     const palHex = res.headers.get('X-Palette') || '';
     state.swatches = palHex ? palHex.split(',').filter(Boolean).map(h => '#' + h) : [];
     const blob = await res.blob();
@@ -381,7 +387,7 @@ async function loadFile(file) {
   cancelPreview();
   state.fileName = file.name;
   state.hasImage = false; state.showOriginal = false; state.outW = 0; state.outH = 0;
-  state.paletteLen = 0; state.swatches = []; state.customError = '';
+  state.paletteLen = 0; state.gridPhase = ''; state.swatches = []; state.customError = '';
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   if (originalURL) URL.revokeObjectURL(originalURL);
   originalURL = URL.createObjectURL(file);
@@ -436,6 +442,7 @@ function render() {
 
   setVal($('inSize'), s.size);
   setVal($('inPixel'), s.pixelSize);
+  $('inSnap').checked = s.snapGrid;
   setVal($('inColors'), s.colors);
   setVal($('inStrength'), s.ditherStrength);
   setVal($('inAlpha'), s.alphaThreshold);
@@ -464,6 +471,7 @@ function render() {
   $('stOut').textContent = s.hasImage ? ((s.outW || computeDims().ow) + '×' + (s.outH || computeDims().oh)) : '—';
   $('stPal').textContent = s.hasImage ? s.paletteLen : '—';
   $('stPx').textContent = (s.autoPixelSize == null) ? '—' : s.autoPixelSize.toFixed(1);
+  $('stPhase').textContent = s.gridPhase || '-';
   const sw = $('stSwatches'); sw.innerHTML = '';
   s.swatches.slice(0, 16).forEach(hex => {
     const d = document.createElement('div'); d.className = 'swatch'; d.style.background = hex; sw.appendChild(d);
