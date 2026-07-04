@@ -4,40 +4,50 @@ Rust CLI and local GUI for converting fuzzy raster images into deliberate pixel-
 
 Licensed under MIT. See `LICENSE` and `NOTICE`.
 
-## Quick Start
-
-```cmd
-cargo run -- input.png output.png --pixel-size 5 --colors 16 --scale 8
-```
-
-Local GUI:
+## GUI
 
 ```cmd
 cargo run --bin gui -- --chrome
 ```
 
+![Pixeline GUI in dark mode](screenshots/dark_mode.png)
+
+![Pixeline GUI in light mode](screenshots/light_mode.png)
+
+## Quick Start
+
+```cmd
+cargo run --bin raster_to_pixel -- input.png output.png --pixel-size 5 --colors 16 --scale 8
+```
+
 Auto pixel-size:
 
 ```cmd
-cargo run -- input.png output.png --auto-pixel-size --colors 16 --scale 8
+cargo run --bin raster_to_pixel -- input.png output.png --auto-pixel-size --colors 16 --scale 8
 ```
 
 Fixed palette:
 
 ```cmd
-cargo run -- input.png output.png --pixel-size 5 --palette pico8 --dither bayer4 --scale 8
+cargo run --bin raster_to_pixel -- input.png output.png --pixel-size 5 --palette pico8 --dither bayer4 --scale 8
 ```
 
 Compare sheet:
 
 ```cmd
-cargo run -- input.png compare.png --pixel-size 5 --colors 16 --scale 8 --compare
+cargo run --bin raster_to_pixel -- input.png compare.png --pixel-size 5 --colors 16 --scale 8 --compare
 ```
 
 Batch folder:
 
 ```cmd
-cargo run -- examples batch_out --auto-pixel-size --auto-colors --scale 8 --palette-out palettes
+cargo run --bin raster_to_pixel -- examples batch_out --auto-pixel-size --auto-colors --scale 8 --palette-out palettes
+```
+
+Palette export:
+
+```cmd
+cargo run --bin raster_to_pixel -- input.png output.png --auto-pixel-size --auto-colors --palette-out palette.hex
 ```
 
 Useful knobs:
@@ -79,6 +89,9 @@ Useful knobs:
 If `input` is a directory, Pixeline batch-converts supported images from that
 folder into the output directory. In batch mode, `--palette-out`, `--debug-json`,
 and `--debug-grid` are directories for per-image sidecars.
+
+In the GUI, custom palettes are pasted into the `Custom...` palette box. The
+parser accepts Lospec `.hex` text and GIMP `.gpl` text.
 
 ## How It Works
 
