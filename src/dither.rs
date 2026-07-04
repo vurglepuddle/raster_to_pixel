@@ -32,7 +32,7 @@ pub fn ordered_dither(
     strength: f32,
     amplitude: f32,
     use_8x8: bool,
-) -> Vec<u8> {
+) -> Vec<u16> {
     assert!(width > 0 && pixels.len().is_multiple_of(width));
     let m8 = bayer8();
     let mut out = Vec::with_capacity(pixels.len());
@@ -45,7 +45,7 @@ pub fn ordered_dither(
             (BAYER4[y % 4][x % 4] as f32 + 0.5) / 16.0 - 0.5
         };
         let q = [p[0] + t * amplitude * strength, p[1], p[2]];
-        out.push(nearest(palette, q) as u8);
+        out.push(nearest(palette, q) as u16);
     }
     out
 }
@@ -60,12 +60,12 @@ pub fn floyd_steinberg(
     palette: &[[f32; 3]],
     edge_mask: &[bool],
     clamp: f32,
-) -> Vec<u8> {
+) -> Vec<u16> {
     assert!(width > 0 && pixels.len().is_multiple_of(width));
     assert_eq!(edge_mask.len(), pixels.len());
     let height = pixels.len() / width;
     let mut buf: Vec<[f32; 3]> = pixels.to_vec();
-    let mut out = vec![0u8; pixels.len()];
+    let mut out = vec![0u16; pixels.len()];
 
     for y in 0..height {
         let ltr = y % 2 == 0; // serpentine
@@ -73,7 +73,7 @@ pub fn floyd_steinberg(
             let x = if ltr { step } else { width - 1 - step };
             let i = y * width + x;
             let idx = nearest(palette, buf[i]);
-            out[i] = idx as u8;
+            out[i] = idx as u16;
             if edge_mask[i] {
                 continue; // Absorb error at edges.
             }
