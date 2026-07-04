@@ -18,6 +18,8 @@ pub enum CellMode {
     Dominant,
 }
 
+pub const DEFAULT_DOMINANT_THRESHOLD: f32 = 0.25;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SamplingGrid {
     pub origin_x: f64,
@@ -36,13 +38,42 @@ pub fn downsample(
     dst_h: usize,
     mode: CellMode,
 ) -> Vec<f32> {
+    downsample_with_dominant_threshold(
+        src,
+        src_w,
+        src_h,
+        dst_w,
+        dst_h,
+        mode,
+        DEFAULT_DOMINANT_THRESHOLD,
+    )
+}
+
+pub fn downsample_with_dominant_threshold(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    mode: CellMode,
+    dominant_threshold: f32,
+) -> Vec<f32> {
     let grid = SamplingGrid {
         origin_x: 0.0,
         origin_y: 0.0,
         cell_w: src_w as f64 / dst_w as f64,
         cell_h: src_h as f64 / dst_h as f64,
     };
-    downsample_grid(src, src_w, src_h, dst_w, dst_h, grid, mode)
+    downsample_grid_with_dominant_threshold(
+        src,
+        src_w,
+        src_h,
+        dst_w,
+        dst_h,
+        grid,
+        mode,
+        dominant_threshold,
+    )
 }
 
 pub fn downsample_grid(
@@ -53,6 +84,28 @@ pub fn downsample_grid(
     dst_h: usize,
     grid: SamplingGrid,
     mode: CellMode,
+) -> Vec<f32> {
+    downsample_grid_with_dominant_threshold(
+        src,
+        src_w,
+        src_h,
+        dst_w,
+        dst_h,
+        grid,
+        mode,
+        DEFAULT_DOMINANT_THRESHOLD,
+    )
+}
+
+pub fn downsample_grid_with_dominant_threshold(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    grid: SamplingGrid,
+    mode: CellMode,
+    dominant_threshold: f32,
 ) -> Vec<f32> {
     assert_eq!(src.len(), src_w * src_h * 4);
     assert!(dst_w >= 1 && dst_h >= 1 && dst_w <= src_w && dst_h <= src_h);
@@ -67,7 +120,7 @@ pub fn downsample_grid(
             let x0 = grid.origin_x + cx as f64 * grid.cell_w;
             let x1 = grid.origin_x + (cx + 1) as f64 * grid.cell_w;
             let cell = collect_cell(src, src_w, src_h, x0, x1, y0, y1);
-            out.extend_from_slice(&reduce_cell(&cell, mode));
+            out.extend_from_slice(&reduce_cell(&cell, mode, dominant_threshold));
         }
     }
     out
@@ -118,7 +171,7 @@ fn overlap_1d(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
     (a1.min(b1) - a0.max(b0)).max(0.0)
 }
 
-fn reduce_cell(cell: &[WeightedPixel], mode: CellMode) -> [f32; 4] {
+fn reduce_cell(cell: &[WeightedPixel], mode: CellMode, dominant_threshold: f32) -> [f32; 4] {
     let area_sum: f32 = cell.iter().map(|p| p.weight).sum();
     let a_sum: f32 = cell.iter().map(|p| p.rgba[3] * p.weight).sum();
     if area_sum <= f32::EPSILON {
@@ -135,10 +188,10 @@ fn reduce_cell(cell: &[WeightedPixel], mode: CellMode) -> [f32; 4] {
             if luma_range(cell) >= 0.08 {
                 reduce_median(cell, a_mean)
             } else {
-                reduce_dominant(cell, a_mean)
+                reduce_dominant(cell, a_sum, a_mean, dominant_threshold)
             }
         }
-        CellMode::Dominant => reduce_dominant(cell, a_mean),
+        CellMode::Dominant => reduce_dominant(cell, a_sum, a_mean, dominant_threshold),
     }
 }
 
@@ -200,7 +253,12 @@ fn reduce_median(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
     [best.rgba[0], best.rgba[1], best.rgba[2], a_mean]
 }
 
-fn reduce_dominant(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
+fn reduce_dominant(
+    cell: &[WeightedPixel],
+    a_sum: f32,
+    a_mean: f32,
+    dominant_threshold: f32,
+) -> [f32; 4] {
     // Bucket to 32 levels/channel, find the most populated bucket
     // (ties broken by lowest bucket key -> deterministic), then
     // average that bucket's members for a clean representative.
@@ -224,6 +282,9 @@ fn reduce_dominant(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
                 .then_with(|| b_key.cmp(&a_key))
         })
         .unwrap();
+    if n / a_sum < dominant_threshold.clamp(0.0, 1.0) {
+        return reduce_box(cell, a_sum, a_mean);
+    }
     [sum[0] / n, sum[1] / n, sum[2] / n, a_mean]
 }
 
@@ -349,6 +410,23 @@ mod tests {
         src[2] = 1.0;
         let out = downsample(&src, 2, 2, 1, 1, CellMode::Dominant);
         assert!((out[0] - 0.1).abs() < 1e-5, "got {out:?}");
+    }
+
+    #[test]
+    fn dominant_threshold_falls_back_when_no_color_wins() {
+        let src = vec![
+            1.0, 0.0, 0.0, 1.0, //
+            0.0, 1.0, 0.0, 1.0, //
+            0.0, 0.0, 1.0, 1.0, //
+            1.0, 1.0, 1.0, 1.0,
+        ];
+        let out = downsample_with_dominant_threshold(&src, 2, 2, 1, 1, CellMode::Dominant, 0.30);
+        assert!(
+            (out[0] - 0.5).abs() < 1e-6
+                && (out[1] - 0.5).abs() < 1e-6
+                && (out[2] - 0.5).abs() < 1e-6,
+            "expected box fallback, got {out:?}"
+        );
     }
 
     #[test]

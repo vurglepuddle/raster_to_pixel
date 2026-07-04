@@ -312,6 +312,7 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         },
         alpha_threshold: parse_or::<u16>(get("alphaThreshold"), 128).min(255) as u8,
         cell,
+        dominant_threshold: parse_or::<f32>(get("dominantThreshold"), 0.25).clamp(0.0, 1.0),
         compare: if preview {
             false
         } else {
