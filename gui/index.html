@@ -170,6 +170,14 @@
         <div class="customerr" id="customErr" style="display:none;"></div>
       </div>
 
+      <div class="sec">Palette Cleanup</div>
+      <div id="cleanupBlock">
+        <div class="row nb"><span class="lbl">Highlight</span>
+          <input type="range" min="0" max="0.25" step="0.01" id="inHighlight"><span class="val" id="highlightVal">0.03</span></div>
+        <div class="row nb"><span class="lbl">Shadow</span>
+          <input type="range" min="0" max="0.35" step="0.01" id="inShadow"><span class="val" id="shadowVal">0.16</span></div>
+      </div>
+
       <div class="sec">Downsampling</div>
       <div class="segwrap" id="cellGrp"></div>
       <div class="row nb" id="rowDominance" style="padding-top:10px;"><span class="lbl">Dominance</span>
@@ -218,6 +226,7 @@ const state = {
   fileName: '', srcW: 0, srcH: 0, autoPixelSize: null, hasImage: false,
   sizeMode: 'size', size: 64, pixelSize: 6, snapGrid: true,
   colors: 16, palette: 'adaptive', customHex: '',
+  highlightCollapse: 0.03, shadowCollapse: 0.16,
   cell: 'detail', dominantThreshold: 0.25, dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false,
   outW: 0, outH: 0, paletteLen: 0, gridPhase: '', rendering: false,
@@ -254,6 +263,8 @@ $('inSize').oninput = e => set({ size: clamp(parseInt(e.target.value), 1, Math.m
 $('inPixel').oninput = e => set({ pixelSize: clamp(parseFloat(e.target.value), 1, 64) });
 $('inSnap').onchange = e => set({ snapGrid: e.target.checked });
 $('inColors').oninput = e => set({ colors: clamp(parseInt(e.target.value), 1, 512) });
+$('inHighlight').oninput = e => set({ highlightCollapse: clamp(parseFloat(e.target.value), 0, 0.25) });
+$('inShadow').oninput = e => set({ shadowCollapse: clamp(parseFloat(e.target.value), 0, 0.35) });
 $('inDominance').oninput = e => set({ dominantThreshold: clamp(parseFloat(e.target.value), 0, 1) });
 $('inStrength').oninput = e => set({ ditherStrength: clamp(parseFloat(e.target.value), 0, 1) });
 $('inAlpha').oninput = e => set({ alphaThreshold: clamp(parseInt(e.target.value), 0, 255) });
@@ -424,7 +435,7 @@ function updatePreviewImg() {
 
 function settingsParams() {
   const p = new URLSearchParams();
-  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','cell','dominantThreshold','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
+  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','cell','dominantThreshold','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
   p.set('compare', state.compare ? 'true' : 'false');
   return p;
 }
@@ -540,11 +551,15 @@ function render() {
   setVal($('inPixel'), s.pixelSize);
   $('inSnap').checked = s.snapGrid;
   setVal($('inColors'), s.colors);
+  setVal($('inHighlight'), s.highlightCollapse);
+  setVal($('inShadow'), s.shadowCollapse);
   setVal($('inDominance'), s.dominantThreshold);
   setVal($('inStrength'), s.ditherStrength);
   setVal($('inAlpha'), s.alphaThreshold);
   setVal($('inCustom'), s.customHex);
   $('inPalette').value = s.palette;
+  $('highlightVal').textContent = s.highlightCollapse.toFixed(2);
+  $('shadowVal').textContent = s.shadowCollapse.toFixed(2);
   $('strengthVal').textContent = s.ditherStrength.toFixed(2);
   $('dominanceVal').textContent = s.dominantThreshold.toFixed(2);
   $('alphaVal').textContent = s.alphaThreshold;
@@ -555,6 +570,7 @@ function render() {
   $('rowSize').classList.toggle('dim', s.sizeMode !== 'size');
   $('rowPixel').classList.toggle('dim', s.sizeMode !== 'pixel');
   $('colorsBlock').classList.toggle('dim', s.palette !== 'adaptive');
+  $('cleanupBlock').classList.toggle('dim', s.palette !== 'adaptive');
   $('rowDominance').classList.toggle('dim', s.cell !== 'dominant' && s.cell !== 'detail');
   $('rowStrength').classList.toggle('dim', s.dither === 'none');
   $('rowDetected').style.display = s.sizeMode === 'auto' ? 'flex' : 'none';

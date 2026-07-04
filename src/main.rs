@@ -5,7 +5,9 @@ use image::ImageReader;
 use raster_to_pixel::{
     downsample::CellMode,
     palettes,
-    pipeline::{self, Config, Dither, PaletteChoice},
+    pipeline::{
+        self, Config, Dither, PaletteChoice, DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
+    },
 };
 
 #[derive(Debug, Parser)]
@@ -67,6 +69,14 @@ struct Args {
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     #[arg(long, default_value_t = 0.25)]
     dominant_threshold: f32,
+
+    /// Adaptive palette highlight cleanup. 0 disables; larger values collapse deeper highlights.
+    #[arg(long, default_value_t = DEFAULT_HIGHLIGHT_COLLAPSE)]
+    highlight_collapse: f32,
+
+    /// Adaptive palette shadow cleanup. 0 disables; larger values collapse deeper shadows.
+    #[arg(long, default_value_t = DEFAULT_SHADOW_COLLAPSE)]
+    shadow_collapse: f32,
 
     /// Write an original/result side-by-side comparison sheet.
     #[arg(long)]
@@ -167,6 +177,12 @@ fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
     if !(0.0..=1.0).contains(&args.dominant_threshold) || !args.dominant_threshold.is_finite() {
         return Err("--dominant-threshold must be a finite number in 0.0..=1.0".into());
     }
+    if !(0.0..=1.0).contains(&args.highlight_collapse) || !args.highlight_collapse.is_finite() {
+        return Err("--highlight-collapse must be a finite number in 0.0..=1.0".into());
+    }
+    if !(0.0..=1.0).contains(&args.shadow_collapse) || !args.shadow_collapse.is_finite() {
+        return Err("--shadow-collapse must be a finite number in 0.0..=1.0".into());
+    }
     Ok(())
 }
 
@@ -197,6 +213,8 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         alpha_threshold: args.alpha_threshold,
         cell: args.cell.into(),
         dominant_threshold: args.dominant_threshold,
+        highlight_collapse: args.highlight_collapse,
+        shadow_collapse: args.shadow_collapse,
         compare: args.compare,
     })
 }
