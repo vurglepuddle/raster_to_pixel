@@ -73,7 +73,10 @@
   .foot{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:8px 18px;min-height:56px;border-top:1px solid var(--line);background:var(--panel);flex-shrink:0;}
   .status{display:flex;align-items:center;gap:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-dim);font-variant-numeric:tabular-nums;flex-wrap:wrap;flex:1;min-width:0;}
   .status .k{color:var(--text-mute);}
-  .swatches{--palette-cols:16;display:grid;grid-template-columns:repeat(var(--palette-cols),minmax(4px,1fr));gap:0;align-items:stretch;width:min(56vw,720px);max-width:100%;background:var(--line);border:1px solid color-mix(in srgb,var(--line) 75%,transparent);overflow:hidden;}
+  .metric{display:inline-flex;align-items:baseline;gap:2px;white-space:nowrap;}
+  .metric .v{display:inline-block;color:var(--text-dim);}
+  #stOut{width:9ch;} #stPal{width:3ch;} #stPx{width:4ch;} #stPhase{width:5ch;}
+  .swatches{--palette-cols:16;display:grid;grid-template-columns:repeat(var(--palette-cols),minmax(4px,1fr));gap:0;align-items:stretch;width:min(56vw,720px);max-width:100%;overflow:hidden;}
   .swatch{aspect-ratio:1 / 1;width:100%;min-width:0;border:none;border-radius:0;}
   .exportgrp{display:flex;align-items:center;gap:12px;flex-shrink:0;}
   .stepper{display:flex;align-items:center;gap:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:2px;}
@@ -186,10 +189,10 @@
   <!-- footer -->
   <div class="foot">
     <div class="status">
-      <span><span class="k">out </span><span id="stOut">—</span></span>
-      <span><span class="k">pal </span><span id="stPal">—</span></span>
-      <span><span class="k">px </span><span id="stPx">—</span></span>
-      <span><span class="k">phase </span><span id="stPhase">-</span></span>
+      <span class="metric"><span class="k">out </span><span class="v" id="stOut">—</span></span>
+      <span class="metric"><span class="k">pal </span><span class="v" id="stPal">—</span></span>
+      <span class="metric"><span class="k">px </span><span class="v" id="stPx">—</span></span>
+      <span class="metric" title="Grid phase: detected source-pixel x,y offset used by Snap grid."><span class="k">phase </span><span class="v" id="stPhase">-</span></span>
       <div class="swatches" id="stSwatches"></div>
     </div>
     <div class="exportgrp">
@@ -570,7 +573,10 @@ function render() {
   $('stPhase').textContent = s.gridPhase || '-';
   const sw = $('stSwatches'); sw.innerHTML = '';
   const visibleSwatches = s.swatches.slice(0, PALETTE_PREVIEW_MAX);
-  const cols = visibleSwatches.length <= 16 ? Math.max(visibleSwatches.length, 1) : Math.min(64, Math.ceil(visibleSwatches.length / Math.ceil(visibleSwatches.length / 64)));
+  const cols = visibleSwatches.length === 0
+    ? 32
+    : Math.max(32, Math.min(64, Math.ceil(visibleSwatches.length / Math.ceil(visibleSwatches.length / 64))));
+  sw.style.display = visibleSwatches.length ? 'grid' : 'none';
   sw.style.setProperty('--palette-cols', cols);
   sw.title = visibleSwatches.length
     ? `Showing ${visibleSwatches.length} of ${s.swatches.length} palette colors`

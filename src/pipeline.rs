@@ -637,10 +637,24 @@ fn quantize_to_rgba8(
     options: QuantizeOptions<'_>,
 ) -> (RgbaImage, Vec<[u8; 3]>) {
     let threshold = options.alpha_threshold as f32 / 255.0;
+    let adaptive_palette = options.fixed_palette.is_none();
+    let raw_labs: Vec<[f32; 3]> = linear_rgba
+        .chunks_exact(4)
+        .map(|px| linear_to_oklab(px[0], px[1], px[2]))
+        .collect();
+    let dark_anchor = if adaptive_palette {
+        darkest_adaptive_source_color(linear_rgba, &raw_labs, threshold)
+    } else {
+        None
+    };
     let mut samples = Vec::new();
-    for px in linear_rgba.chunks_exact(4) {
+    for (px, &lab) in linear_rgba.chunks_exact(4).zip(&raw_labs) {
         if px[3] >= threshold {
-            samples.push(linear_to_oklab(px[0], px[1], px[2]));
+            samples.push(if adaptive_palette {
+                collapse_adaptive_palette_noise(lab, dark_anchor)
+            } else {
+                lab
+            });
         }
     }
 
@@ -653,9 +667,15 @@ fn quantize_to_rgba8(
         .map(|palette| palette.to_vec())
         .unwrap_or_else(|| build_palette(&samples, options.colors.min(samples.len()), 32));
     let palette_srgb: Vec<[u8; 3]> = palette.iter().map(|&lab| oklab_to_srgb8(lab)).collect();
-    let labs: Vec<[f32; 3]> = linear_rgba
-        .chunks_exact(4)
-        .map(|px| linear_to_oklab(px[0], px[1], px[2]))
+    let labs: Vec<[f32; 3]> = raw_labs
+        .iter()
+        .map(|&lab| {
+            if adaptive_palette {
+                collapse_adaptive_palette_noise(lab, dark_anchor)
+            } else {
+                lab
+            }
+        })
         .collect();
     let dithered = match options.dither {
         Dither::None => None,
@@ -688,6 +708,48 @@ fn quantize_to_rgba8(
     }
 
     (out, palette_srgb)
+}
+
+fn darkest_adaptive_source_color(
+    linear_rgba: &[f32],
+    labs: &[[f32; 3]],
+    alpha_threshold: f32,
+) -> Option<[f32; 3]> {
+    linear_rgba
+        .chunks_exact(4)
+        .zip(labs)
+        .filter(|(px, lab)| px[3] >= alpha_threshold && is_adaptive_near_black(**lab))
+        .map(|(_, &lab)| lab)
+        .min_by(|a, b| {
+            a[0].partial_cmp(&b[0])
+                .unwrap()
+                .then_with(|| a[1].partial_cmp(&b[1]).unwrap())
+                .then_with(|| a[2].partial_cmp(&b[2]).unwrap())
+        })
+}
+
+fn collapse_adaptive_palette_noise(lab: [f32; 3], dark_anchor: Option<[f32; 3]>) -> [f32; 3] {
+    if let Some(anchor) = dark_anchor {
+        if is_adaptive_near_black(lab) {
+            return anchor;
+        }
+    }
+    collapse_adaptive_near_white(lab)
+}
+
+fn is_adaptive_near_black(lab: [f32; 3]) -> bool {
+    lab[0] <= 0.16
+}
+
+fn collapse_adaptive_near_white(lab: [f32; 3]) -> [f32; 3] {
+    const MIN_L: f32 = 0.97;
+    const MAX_CHROMA2: f32 = 0.006 * 0.006;
+    let chroma2 = lab[1] * lab[1] + lab[2] * lab[2];
+    if lab[0] >= MIN_L && chroma2 <= MAX_CHROMA2 {
+        [1.0, 0.0, 0.0]
+    } else {
+        lab
+    }
 }
 
 fn scale_nearest(src: &RgbaImage, scale: u32) -> RgbaImage {
@@ -836,6 +898,112 @@ mod tests {
             "only {} unique output colors",
             unique.len()
         );
+    }
+
+    #[test]
+    fn adaptive_palette_collapses_generated_near_white_noise() {
+        let mut img = RgbaImage::new(48, 16);
+        let whites = [
+            Rgba([254, 254, 254, 255]),
+            Rgba([252, 251, 251, 255]),
+            Rgba([247, 246, 245, 255]),
+        ];
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            if x < 36 {
+                *p = whites[((x + y) % 3) as usize];
+            } else {
+                let g = 80 + ((x * 11 + y * 7) % 120) as u8;
+                *p = Rgba([20, g, 35, 255]);
+            }
+        }
+
+        let config = Config {
+            size: 48,
+            colors: 16,
+            ..cfg()
+        };
+        let r = convert(&img, &config).unwrap();
+        let near_white_count = r
+            .palette
+            .iter()
+            .filter(|&&[r, g, b]| r >= 245 && g >= 245 && b >= 245)
+            .count();
+
+        assert_eq!(
+            near_white_count, 1,
+            "palette should spend one slot on generated white noise: {:?}",
+            r.palette
+        );
+        assert!(
+            r.palette.contains(&[255, 255, 255]),
+            "canonical white should be present: {:?}",
+            r.palette
+        );
+    }
+
+    #[test]
+    fn adaptive_near_white_collapse_preserves_warm_off_white() {
+        let near_white = collapse_adaptive_near_white(srgb8_to_oklab(247, 246, 245));
+        let warm_off_white = collapse_adaptive_near_white(srgb8_to_oklab(245, 242, 235));
+
+        assert_eq!(oklab_to_srgb8(near_white), [255, 255, 255]);
+        assert_ne!(
+            oklab_to_srgb8(warm_off_white),
+            [255, 255, 255],
+            "warm off-white should remain available as an intentional color"
+        );
+    }
+
+    #[test]
+    fn adaptive_palette_collapses_generated_near_black_noise_to_source_darkest() {
+        let mut img = RgbaImage::new(48, 16);
+        let darks = [
+            Rgba([3, 1, 8, 255]),
+            Rgba([8, 2, 27, 255]),
+            Rgba([16, 8, 9, 255]),
+        ];
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            if x < 12 {
+                *p = darks[((x + y) % 3) as usize];
+            } else {
+                let g = 70 + ((x * 13 + y * 5) % 130) as u8;
+                *p = Rgba([18, g, 34, 255]);
+            }
+        }
+
+        let config = Config {
+            size: 48,
+            colors: 16,
+            ..cfg()
+        };
+        let r = convert(&img, &config).unwrap();
+        let near_black_count = r
+            .palette
+            .iter()
+            .filter(|&&[r, g, b]| r <= 20 && g <= 12 && b <= 32)
+            .count();
+
+        assert_eq!(
+            near_black_count, 1,
+            "palette should spend one slot on generated near-black noise: {:?}",
+            r.palette
+        );
+        assert!(
+            r.palette.contains(&[3, 1, 8]),
+            "dark collapse should preserve the source's darkest color, not invent black: {:?}",
+            r.palette
+        );
+    }
+
+    #[test]
+    fn adaptive_near_black_collapse_preserves_readable_dark_colors() {
+        let darkest = srgb8_to_oklab(3, 1, 8);
+        let noisy_dark = collapse_adaptive_palette_noise(srgb8_to_oklab(16, 8, 9), Some(darkest));
+        let readable_navy =
+            collapse_adaptive_palette_noise(srgb8_to_oklab(29, 43, 83), Some(darkest));
+
+        assert_eq!(oklab_to_srgb8(noisy_dark), [3, 1, 8]);
+        assert_eq!(oklab_to_srgb8(readable_navy), [29, 43, 83]);
     }
 
     #[test]

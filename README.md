@@ -70,3 +70,6 @@ The default `detail` cell mode chooses between median and dominant per cell:
   source pixels and transparent edges are handled consistently.
 - Pixel-size modes can snap the sampling grid to the strongest detected edge phase,
   which helps when the source grid is offset by a few pixels.
+- Adaptive palettes merge generated near-white and near-black noise before k-means.
+  Near-whites collapse to white; near-blacks collapse to the darkest source color
+  instead of inventing pure black.
