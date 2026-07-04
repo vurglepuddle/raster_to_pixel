@@ -13,8 +13,9 @@ pub enum CellMode {
     Median,
     /// Dominant for calm cells, median for high-contrast tiny detail.
     Detail,
-    /// Most common coarsely-bucketed color (bucket = 32 levels/channel),
-    /// represented by the mean of that bucket's members. Crispest; default.
+    /// Most common coarsely-bucketed color (two shifted 32-level bucket
+    /// grids; the stronger winner is used), represented by the real cell
+    /// color nearest the winning bucket's weighted mean. Crispest; default.
     Dominant,
 }
 
@@ -253,39 +254,116 @@ fn reduce_median(cell: &[WeightedPixel], a_mean: f32) -> [f32; 4] {
     [best.rgba[0], best.rgba[1], best.rgba[2], a_mean]
 }
 
+/// Quantize one channel to a 5-bit bucket index. The `shifted` grid places
+/// its bucket boundaries half a bucket away from the plain grid, so a color
+/// family straddling a plain-grid boundary lands in one shifted bucket.
+fn bucket_index(v: f32, shifted: bool) -> u16 {
+    let scaled = v.clamp(0.0, 1.0) * 31.0 + if shifted { 0.5 } else { 0.0 };
+    (scaled as u16).min(31)
+}
+
+fn bucket_key(rgba: [f32; 4], shifted: bool) -> u16 {
+    bucket_index(rgba[0], shifted) << 10
+        | bucket_index(rgba[1], shifted) << 5
+        | bucket_index(rgba[2], shifted)
+}
+
+#[derive(Clone, Copy)]
+struct BucketWin {
+    key: u16,
+    shifted: bool,
+    weight: f32,
+}
+
+/// Strongest bucket of one grid: max alpha-weight, ties broken by lowest
+/// bucket key -> deterministic.
+fn strongest_bucket(cell: &[WeightedPixel], shifted: bool) -> Option<BucketWin> {
+    let mut counts: std::collections::HashMap<u16, f32> = std::collections::HashMap::new();
+    for p in cell.iter().filter(|p| p.rgba[3] > 0.0) {
+        *counts.entry(bucket_key(p.rgba, shifted)).or_insert(0.0) += p.weight * p.rgba[3];
+    }
+    counts
+        .iter()
+        .max_by(|(&a_key, &a_n), (&b_key, &b_n)| {
+            a_n.partial_cmp(&b_n)
+                .unwrap()
+                .then_with(|| b_key.cmp(&a_key))
+        })
+        .map(|(&key, &weight)| BucketWin {
+            key,
+            shifted,
+            weight,
+        })
+}
+
 fn reduce_dominant(
     cell: &[WeightedPixel],
     a_sum: f32,
     a_mean: f32,
     dominant_threshold: f32,
 ) -> [f32; 4] {
-    // Bucket to 32 levels/channel, find the most populated bucket
-    // (ties broken by lowest bucket key -> deterministic), then
-    // average that bucket's members for a clean representative.
-    let mut counts: std::collections::HashMap<u16, (f32, [f32; 3])> =
-        std::collections::HashMap::new();
-    for p in cell.iter().filter(|p| p.rgba[3] > 0.0) {
-        let q = |v: f32| ((v.clamp(0.0, 1.0) * 31.0) as u16).min(31);
-        let key = q(p.rgba[0]) << 10 | q(p.rgba[1]) << 5 | q(p.rgba[2]);
-        let e = counts.entry(key).or_insert((0.0, [0.0; 3]));
-        let w = p.weight * p.rgba[3];
-        e.0 += w;
-        for (ch, value) in p.rgba.iter().take(3).enumerate() {
-            e.1[ch] += *value * w;
+    // Two shifted 5-bit bucket grids: a color family that a bucket boundary
+    // would split in one grid stays whole in the other. Use whichever grid
+    // produces the strongest dominant cluster (ties prefer the plain grid).
+    let plain = strongest_bucket(cell, false);
+    let shifted = strongest_bucket(cell, true);
+    let win = match (plain, shifted) {
+        (Some(a), Some(b)) => {
+            if b.weight > a.weight {
+                b
+            } else {
+                a
+            }
         }
-    }
-    let (_, &(n, sum)) = counts
-        .iter()
-        .max_by(|(&a_key, &(a_n, _)), (&b_key, &(b_n, _))| {
-            a_n.partial_cmp(&b_n)
-                .unwrap()
-                .then_with(|| b_key.cmp(&a_key))
-        })
-        .unwrap();
-    if n / a_sum < dominant_threshold.clamp(0.0, 1.0) {
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return [0.0, 0.0, 0.0, 0.0],
+    };
+    if win.weight / a_sum < dominant_threshold.clamp(0.0, 1.0) {
         return reduce_box(cell, a_sum, a_mean);
     }
-    [sum[0] / n, sum[1] / n, sum[2] / n, a_mean]
+
+    // Representative: the winning bucket's weighted mean, snapped to the
+    // nearest real member so dominant cells never output synthetic colors
+    // (mirrors the median snap). Ties -> heavier member -> scan order.
+    let mut mean = [0f32; 3];
+    for p in cell.iter().filter(|p| p.rgba[3] > 0.0) {
+        if bucket_key(p.rgba, win.shifted) == win.key {
+            let w = p.weight * p.rgba[3];
+            for (ch, value) in p.rgba.iter().take(3).enumerate() {
+                mean[ch] += *value * w;
+            }
+        }
+    }
+    for value in &mut mean {
+        *value /= win.weight;
+    }
+    let mut best: Option<[f32; 4]> = None;
+    let mut best_dist = f32::INFINITY;
+    let mut best_weight = -1.0f32;
+    for p in cell.iter().filter(|p| p.rgba[3] > 0.0) {
+        if bucket_key(p.rgba, win.shifted) != win.key {
+            continue;
+        }
+        let dist = p
+            .rgba
+            .iter()
+            .take(3)
+            .zip(mean)
+            .map(|(a, b)| {
+                let d = *a - b;
+                d * d
+            })
+            .sum::<f32>();
+        let weight = p.weight * p.rgba[3];
+        if dist < best_dist || ((dist - best_dist).abs() <= f32::EPSILON && weight > best_weight) {
+            best = Some(p.rgba);
+            best_dist = dist;
+            best_weight = weight;
+        }
+    }
+    let rep = best.unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    [rep[0], rep[1], rep[2], a_mean]
 }
 
 fn luma_range(cell: &[WeightedPixel]) -> f32 {
@@ -426,6 +504,41 @@ mod tests {
                 && (out[1] - 0.5).abs() < 1e-6
                 && (out[2] - 0.5).abs() < 1e-6,
             "expected box fallback, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn dominant_reunites_colors_split_across_a_bucket_boundary() {
+        // 0.322 and 0.323 straddle the plain-grid boundary at 10/31≈0.32258:
+        // plain grid splits them 3+3, letting the 4-pixel 0.5 block win. The
+        // shifted grid keeps them together (weight 6), so the fuzzy family
+        // must win and the output must come from it.
+        let mut src = Vec::new();
+        for &v in &[
+            0.322f32, 0.322, 0.322, 0.323, 0.323, 0.323, 0.5, 0.5, 0.5, 0.5,
+        ] {
+            src.extend_from_slice(&[v, v, v, 1.0]);
+        }
+        let out = downsample_with_dominant_threshold(&src, 10, 1, 1, 1, CellMode::Dominant, 0.25);
+        assert!(
+            (out[0] - 0.3225).abs() < 0.002,
+            "split color family should win: {out:?}"
+        );
+        assert!(out[0] != 0.5, "single-grid winner must not survive");
+    }
+
+    #[test]
+    fn dominant_representative_is_a_real_cell_color() {
+        // Members 0.30, 0.30, 0.316 share a plain bucket; the old mean gave
+        // the synthetic 0.3053. The representative must now be a member.
+        let mut src = Vec::new();
+        for &v in &[0.30f32, 0.30, 0.316] {
+            src.extend_from_slice(&[v, v, v, 1.0]);
+        }
+        let out = downsample(&src, 3, 1, 1, 1, CellMode::Dominant);
+        assert!(
+            (out[0] - 0.30).abs() < 1e-6,
+            "expected the nearest real member, got {out:?}"
         );
     }
 

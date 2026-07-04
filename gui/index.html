@@ -75,7 +75,10 @@
   .status .k{color:var(--text-mute);}
   .metric{display:inline-flex;align-items:baseline;gap:2px;white-space:nowrap;}
   .metric .v{display:inline-block;color:var(--text-dim);}
-  #stOut{width:9ch;} #stPal{width:3ch;} #stPx{width:4ch;} #stPhase{width:5ch;}
+  #stOut{width:9ch;} #stPal{width:5ch;} #stPx{width:4ch;} #stPhase{width:5ch;} #stConf{width:4ch;}
+  #gridOverlay{position:absolute;left:50%;top:50%;pointer-events:none;z-index:4;display:none;
+    background-image:linear-gradient(to right,rgba(240,60,220,.55) 1px,transparent 1px),
+    linear-gradient(to bottom,rgba(240,60,220,.55) 1px,transparent 1px);}
   .swatches{--palette-cols:16;display:grid;grid-template-columns:repeat(var(--palette-cols),minmax(4px,1fr));gap:0;align-items:stretch;width:min(56vw,720px);max-width:100%;overflow:hidden;}
   .swatch{aspect-ratio:1 / 1;width:100%;min-width:0;border:none;border-radius:0;}
   .exportgrp{display:flex;align-items:center;gap:12px;flex-shrink:0;}
@@ -126,6 +129,7 @@
     <!-- stage -->
     <div class="stage" id="stage">
       <img id="preview" alt="preview" draggable="false">
+      <div id="gridOverlay"></div>
       <div id="empty"><b>Drop an image here</b><span>or click “Open…” — PNG, JPG, or WebP</span></div>
       <div class="overlay" id="renderInd" style="top:14px;left:14px;display:none;">
         <div style="width:7px;height:7px;border-radius:50%;background:var(--accent);animation:rtpPulse 1s ease-in-out infinite;"></div>
@@ -135,6 +139,7 @@
       <div class="overlay" id="zoomBox" style="bottom:14px;left:14px;padding:5px 8px;gap:8px;">
         <span style="font-size:10px;font-weight:700;letter-spacing:.08em;color:var(--text-mute);text-transform:uppercase;">Zoom</span>
         <div style="display:flex;gap:3px;" id="zoomGrp"></div>
+        <button class="seg" id="gridBtn" title="Show the output pixel grid over the preview">Grid</button>
       </div>
       <div class="toast" id="toast" style="display:none;"></div>
     </div>
@@ -161,6 +166,8 @@
           <option value="custom">Custom…</option>
         </select></div>
       <div id="colorsBlock">
+        <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Quantizer</span>
+          <div style="display:flex;gap:3px;" id="quantGrp"></div></div>
         <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Colors</span>
           <input type="number" min="1" max="512" class="num" id="inColors"></div>
         <div id="colorPresets" style="display:flex;flex-wrap:wrap;gap:4px;padding-bottom:6px;"></div>
@@ -176,12 +183,16 @@
           <input type="range" min="0" max="0.25" step="0.01" id="inHighlight"><span class="val" id="highlightVal">0.03</span></div>
         <div class="row nb"><span class="lbl">Shadow</span>
           <input type="range" min="0" max="0.35" step="0.01" id="inShadow"><span class="val" id="shadowVal">0.16</span></div>
+        <div class="row nb" title="Merge adaptive palette entries closer than this Oklab distance."><span class="lbl">Merge</span>
+          <input type="range" min="0" max="0.12" step="0.005" id="inMerge"><span class="val" id="mergeVal">0.00</span></div>
       </div>
 
       <div class="sec">Downsampling</div>
       <div class="segwrap" id="cellGrp"></div>
       <div class="row nb" id="rowDominance" style="padding-top:10px;"><span class="lbl">Dominance</span>
         <input type="range" min="0" max="1" step="0.05" id="inDominance"><span class="val" id="dominanceVal">0.25</span></div>
+      <div class="row nb" title="Expand tiny high-contrast details before downsampling so they survive cell voting."><span class="lbl">Detail guard</span>
+        <div style="display:flex;gap:3px;" id="guardGrp"></div></div>
 
       <div class="sec">Dither</div>
       <div class="segwrap" id="ditherGrp"></div>
@@ -189,8 +200,20 @@
         <input type="range" min="0" max="1" step="0.05" id="inStrength"><span class="val" id="strengthVal">0.35</span></div>
 
       <div class="sec">Alpha</div>
-      <div class="row nb"><span class="lbl">Threshold</span>
+      <div class="segwrap" id="alphaModeGrp" style="margin-bottom:4px;"></div>
+      <div class="row"><span class="lbl">Threshold</span>
         <input type="range" min="0" max="255" id="inAlpha"><span class="val" id="alphaVal">128</span></div>
+      <div class="row" id="rowTolerance"><span class="lbl">Tolerance</span>
+        <input type="range" min="0" max="0.5" step="0.01" id="inTolerance"><span class="val" id="toleranceVal">0.10</span></div>
+      <div class="row nb" id="rowKeyColor"><span class="lbl">Key color</span>
+        <input type="color" id="inKeyColor" style="width:74px;height:28px;padding:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:6px;"></div>
+
+      <div class="sec">Cleanup</div>
+      <div class="segwrap" id="cleanupGrp" style="margin-bottom:4px;"></div>
+      <label class="row nb checkrow" id="rowProtect"><span class="lbl">Protect 1px details</span><input type="checkbox" id="inProtect"></label>
+
+      <div class="sec">Outline</div>
+      <div class="segwrap" id="outlineGrp"></div>
     </div>
   </div>
 
@@ -201,6 +224,7 @@
       <span class="metric"><span class="k">pal </span><span class="v" id="stPal">—</span></span>
       <span class="metric"><span class="k">px </span><span class="v" id="stPx">—</span></span>
       <span class="metric" title="Grid phase: detected source-pixel x,y offset used by Snap grid."><span class="k">phase </span><span class="v" id="stPhase">-</span></span>
+      <span class="metric" title="Snap-grid phase confidence (0–1): how decisively the strongest phase beat the runner-up."><span class="k">conf </span><span class="v" id="stConf">-</span></span>
       <div class="swatches" id="stSwatches"></div>
     </div>
     <div class="exportgrp">
@@ -225,11 +249,14 @@ const state = {
   theme: 'dark', accent: null,
   fileName: '', srcW: 0, srcH: 0, autoPixelSize: null, hasImage: false,
   sizeMode: 'size', size: 64, pixelSize: 6, snapGrid: true,
-  colors: 16, palette: 'adaptive', customHex: '',
+  colors: 16, palette: 'adaptive', customHex: '', autoColors: false,
   highlightCollapse: 0.03, shadowCollapse: 0.16,
   cell: 'detail', dominantThreshold: 0.25, dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
-  scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false,
-  outW: 0, outH: 0, paletteLen: 0, gridPhase: '', rendering: false,
+  alphaMode: 'preserve', bgTolerance: 0.10, keyColor: '#00ff00',
+  cleanup: 'none', protectDetails: true, outline: 'none',
+  quantizer: 'kmeans', paletteMerge: 0, contrastExpansion: 0,
+  scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false, showGrid: false,
+  outW: 0, outH: 0, paletteLen: 0, gridPhase: '', phaseConf: '', autoColorsChosen: null, rendering: false,
   swatches: [], customError: '',
 };
 
@@ -253,16 +280,27 @@ function segActive(container, active) {
 buildSeg($('sizeModeGrp'), [['size','Fixed'],['pixel','Pixel'],['auto','Auto']], 'seg-join', v => set({ sizeMode: v }));
 buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant']], 'seg-join', v => set({ cell: v }));
 buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
+buildSeg($('alphaModeGrp'), [['preserve','Keep'],['binary','Binary'],['bgfill','BG Fill'],['key','Key']], 'seg-join', v => set({ alphaMode: v }));
+buildSeg($('cleanupGrp'), [['none','Off'],['conservative','Cons'],['balanced','Bal'],['aggressive','Aggr']], 'seg-join', v => set({ cleanup: v }));
+buildSeg($('outlineGrp'), [['none','Off'],['repair','Repair'],['enforce','Enforce']], 'seg-join', v => set({ outline: v }));
+buildSeg($('quantGrp'), [['kmeans','K-Means'],['wu','Wu']], 'seg', v => set({ quantizer: v }));
+buildSeg($('guardGrp'), [[0,'Off'],[1,'1px'],[2,'2px']], 'seg', v => set({ contrastExpansion: v }));
 buildSeg($('themeGrp'), [['light','Light'],['dark','Dark']], 'seg', v => { state.theme = v; savePrefs(); applyTheme(); });
 buildSeg($('baGrp'), [['result','Result'],['original','Original']], 'seg', v => { state.showOriginal = (v === 'original'); updatePreviewImg(); render(); });
 buildSeg($('zoomGrp'), ZOOMS.map(v => [v, v + '×']), 'seg', v => setZoom(v));
-buildSeg($('colorPresets'), [[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg', v => set({ colors: v }));
+buildSeg($('colorPresets'), [['auto','Auto'],[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg',
+  v => v === 'auto' ? set({ autoColors: true }) : set({ autoColors: false, colors: v }));
 
 // ── inputs ──────────────────────────────────────────────────────────────────
 $('inSize').oninput = e => set({ size: clamp(parseInt(e.target.value), 1, Math.max(state.srcW, state.srcH) || 4096) });
 $('inPixel').oninput = e => set({ pixelSize: clamp(parseFloat(e.target.value), 1, 64) });
 $('inSnap').onchange = e => set({ snapGrid: e.target.checked });
-$('inColors').oninput = e => set({ colors: clamp(parseInt(e.target.value), 1, 512) });
+$('inColors').oninput = e => set({ autoColors: false, colors: clamp(parseInt(e.target.value), 1, 512) });
+$('inTolerance').oninput = e => set({ bgTolerance: clamp(parseFloat(e.target.value), 0, 0.5) });
+$('inMerge').oninput = e => set({ paletteMerge: clamp(parseFloat(e.target.value), 0, 0.12) });
+$('inKeyColor').oninput = e => set({ keyColor: e.target.value });
+$('inProtect').onchange = e => set({ protectDetails: e.target.checked });
+$('gridBtn').onclick = () => { state.showGrid = !state.showGrid; updatePreviewImg(); render(); };
 $('inHighlight').oninput = e => set({ highlightCollapse: clamp(parseFloat(e.target.value), 0, 0.25) });
 $('inShadow').oninput = e => set({ shadowCollapse: clamp(parseFloat(e.target.value), 0, 0.35) });
 $('inDominance').oninput = e => set({ dominantThreshold: clamp(parseFloat(e.target.value), 0, 1) });
@@ -402,7 +440,9 @@ function clampPan() {
   state.panY = clamp(state.panY, -maxY, maxY);
 }
 function applyPreviewTransform() {
-  $('preview').style.transform = `translate(calc(-50% + ${state.panX}px), calc(-50% + ${state.panY}px))`;
+  const t = `translate(calc(-50% + ${state.panX}px), calc(-50% + ${state.panY}px))`;
+  $('preview').style.transform = t;
+  $('gridOverlay').style.transform = t;
 }
 function setZoom(next, anchor) {
   next = ZOOMS.includes(next) ? next : ZOOMS[0];
@@ -428,6 +468,14 @@ function updatePreviewImg() {
   if (state.showOriginal) { img.src = originalURL || ''; img.style.imageRendering = 'auto'; }
   else { img.src = previewURL || ''; img.style.imageRendering = 'pixelated'; }
   img.style.display = state.hasImage ? 'block' : 'none';
+  const grid = $('gridOverlay');
+  const gridOn = state.showGrid && state.hasImage && !state.showOriginal && state.zoom >= 4;
+  grid.style.display = gridOn ? 'block' : 'none';
+  if (gridOn) {
+    grid.style.width = d.w + 'px';
+    grid.style.height = d.h + 'px';
+    grid.style.backgroundSize = state.zoom + 'px ' + state.zoom + 'px';
+  }
   $('empty').style.display = state.hasImage ? 'none' : 'flex';
   clampPan();
   applyPreviewTransform();
@@ -435,7 +483,10 @@ function updatePreviewImg() {
 
 function settingsParams() {
   const p = new URLSearchParams();
-  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','cell','dominantThreshold','dither','ditherStrength','alphaThreshold','scale'].forEach(k => p.set(k, state[k]));
+  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','paletteMerge','quantizer','cell','dominantThreshold','contrastExpansion','dither','ditherStrength','alphaThreshold','alphaMode','bgTolerance','cleanup','outline','scale'].forEach(k => p.set(k, state[k]));
+  p.set('colorKey', state.keyColor.replace('#', ''));
+  p.set('protectDetails', state.protectDetails ? 'true' : 'false');
+  p.set('autoColors', state.autoColors ? 'true' : 'false');
   p.set('compare', state.compare ? 'true' : 'false');
   return p;
 }
@@ -474,6 +525,9 @@ async function runPreview() {
     state.outH = +res.headers.get('X-Out-Height') || state.outH;
     state.paletteLen = +res.headers.get('X-Palette-Len') || 0;
     state.gridPhase = res.headers.get('X-Grid-Phase') || '';
+    state.phaseConf = res.headers.get('X-Phase-Confidence') || '';
+    const autoChosen = res.headers.get('X-Auto-Colors');
+    state.autoColorsChosen = autoChosen ? +autoChosen : null;
     const palHex = res.headers.get('X-Palette') || '';
     state.swatches = palHex ? palHex.split(',').filter(Boolean).map(h => '#' + h) : [];
     const blob = await res.blob();
@@ -542,22 +596,34 @@ function render() {
   segActive($('sizeModeGrp'), s.sizeMode);
   segActive($('cellGrp'), s.cell);
   segActive($('ditherGrp'), s.dither);
+  segActive($('alphaModeGrp'), s.alphaMode);
+  segActive($('cleanupGrp'), s.cleanup);
+  segActive($('outlineGrp'), s.outline);
+  segActive($('quantGrp'), s.quantizer);
+  segActive($('guardGrp'), s.contrastExpansion);
   segActive($('themeGrp'), s.theme);
   segActive($('baGrp'), s.showOriginal ? 'original' : 'result');
   segActive($('zoomGrp'), s.zoom);
-  segActive($('colorPresets'), s.colors);
+  segActive($('colorPresets'), s.autoColors ? 'auto' : s.colors);
+  $('gridBtn').classList.toggle('on', s.showGrid);
 
   setVal($('inSize'), s.size);
   setVal($('inPixel'), s.pixelSize);
   $('inSnap').checked = s.snapGrid;
-  setVal($('inColors'), s.colors);
+  setVal($('inColors'), s.autoColors && s.autoColorsChosen ? s.autoColorsChosen : s.colors);
   setVal($('inHighlight'), s.highlightCollapse);
   setVal($('inShadow'), s.shadowCollapse);
   setVal($('inDominance'), s.dominantThreshold);
   setVal($('inStrength'), s.ditherStrength);
   setVal($('inAlpha'), s.alphaThreshold);
+  setVal($('inTolerance'), s.bgTolerance);
+  setVal($('inKeyColor'), s.keyColor);
+  $('inProtect').checked = s.protectDetails;
   setVal($('inCustom'), s.customHex);
+  setVal($('inMerge'), s.paletteMerge);
   $('inPalette').value = s.palette;
+  $('toleranceVal').textContent = s.bgTolerance.toFixed(2);
+  $('mergeVal').textContent = s.paletteMerge.toFixed(3);
   $('highlightVal').textContent = s.highlightCollapse.toFixed(2);
   $('shadowVal').textContent = s.shadowCollapse.toFixed(2);
   $('strengthVal').textContent = s.ditherStrength.toFixed(2);
@@ -570,9 +636,13 @@ function render() {
   $('rowSize').classList.toggle('dim', s.sizeMode !== 'size');
   $('rowPixel').classList.toggle('dim', s.sizeMode !== 'pixel');
   $('colorsBlock').classList.toggle('dim', s.palette !== 'adaptive');
+  $('inColors').classList.toggle('dim', s.autoColors);
   $('cleanupBlock').classList.toggle('dim', s.palette !== 'adaptive');
   $('rowDominance').classList.toggle('dim', s.cell !== 'dominant' && s.cell !== 'detail');
   $('rowStrength').classList.toggle('dim', s.dither === 'none');
+  $('rowTolerance').classList.toggle('dim', s.alphaMode !== 'bgfill' && s.alphaMode !== 'key');
+  $('rowKeyColor').style.display = s.alphaMode === 'key' ? 'flex' : 'none';
+  $('rowProtect').classList.toggle('dim', s.cleanup === 'none');
   $('rowDetected').style.display = s.sizeMode === 'auto' ? 'flex' : 'none';
   $('detectedVal').textContent = (s.autoPixelSize == null ? '—' : s.autoPixelSize.toFixed(1)) + ' px';
   $('customWrap').style.display = s.palette === 'custom' ? 'block' : 'none';
@@ -584,9 +654,10 @@ function render() {
 
   // status
   $('stOut').textContent = s.hasImage ? ((s.outW || computeDims().ow) + '×' + (s.outH || computeDims().oh)) : '—';
-  $('stPal').textContent = s.hasImage ? s.paletteLen : '—';
+  $('stPal').textContent = s.hasImage ? (s.autoColors && s.autoColorsChosen ? s.paletteLen + '·A' : s.paletteLen) : '—';
   $('stPx').textContent = (s.autoPixelSize == null) ? '—' : s.autoPixelSize.toFixed(1);
   $('stPhase').textContent = s.gridPhase || '-';
+  $('stConf').textContent = s.phaseConf || '-';
   const sw = $('stSwatches'); sw.innerHTML = '';
   const visibleSwatches = s.swatches.slice(0, PALETTE_PREVIEW_MAX);
   const cols = visibleSwatches.length === 0
