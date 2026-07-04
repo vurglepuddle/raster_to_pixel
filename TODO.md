@@ -28,7 +28,11 @@ Local planning notes. This file is intentionally ignored by git for now.
   guard"); outline repair/enforce with auto-detected dark outline color
   (`src/outline.rs`, `--outline`). All wired through Config + CLI + GUI. NOT yet
   field-tested; tests written but not executed (compile-checked only).
-- Handed to Codex: palette export/import (.hex/.gpl/PNG strip), batch CLI folder mode.
+- Codex pass (2026-07): palette import/export supports Lospec `.hex` and GIMP
+  `.gpl`; CLI `--palette-out` writes `.hex`, `.gpl`, or a 1-row PNG strip; GUI
+  can download the current result palette as `.hex`; batch folder mode writes one
+  PNG per supported top-level input image, with optional per-image palette/debug
+  sidecar directories.
 
 ## Reference Repo Scan
 

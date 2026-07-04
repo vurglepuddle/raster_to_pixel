@@ -34,6 +34,12 @@ Compare sheet:
 cargo run -- input.png compare.png --pixel-size 5 --colors 16 --scale 8 --compare
 ```
 
+Batch folder:
+
+```cmd
+cargo run -- examples batch_out --auto-pixel-size --auto-colors --scale 8 --palette-out palettes
+```
+
 Useful knobs:
 
 ```cmd
@@ -45,7 +51,7 @@ Useful knobs:
 --quantizer kmeans  :: adaptive palette algorithm: kmeans or wu (Wu 1992, Oklab lattice)
 --palette-merge .04 :: merge adaptive palette entries closer than this Oklab distance
 --palette pico8     :: built-in palette: pico8, gameboy, sweetie16
---palette file.hex  :: Lospec-style RRGGBB hex list
+--palette file.hex  :: Lospec-style RRGGBB hex list or GIMP .gpl palette
 --dither none       :: no dithering
 --dither bayer4     :: ordered 4x4 Bayer dithering
 --dither bayer8     :: ordered 8x8 Bayer dithering
@@ -66,8 +72,13 @@ Useful knobs:
 --phase-x 2         :: manual grid phase override (also --phase-y)
 --debug-json d.json :: write grid/palette/cleanup diagnostics as JSON
 --debug-grid g.png  :: write the source with the sampling grid drawn on it
+--palette-out p.hex :: write the result palette as .hex, .gpl, or a 1-row .png strip
 --compare           :: write original/result side-by-side
 ```
+
+If `input` is a directory, Pixeline batch-converts supported images from that
+folder into the output directory. In batch mode, `--palette-out`, `--debug-json`,
+and `--debug-grid` are directories for per-image sidecars.
 
 ## How It Works
 
