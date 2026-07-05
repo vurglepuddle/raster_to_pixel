@@ -19,10 +19,20 @@
   }
   [data-theme="light"]{
     --backdrop:#e8e6ef; --bg:#f6f5fa; --panel:#ffffff; --panel-2:#eeecf4;
-    --stage:#e6e4ee; --line:#e1dfea; --text:#1a1922; --text-dim:#565469; --text-mute:#8b899d;
+    --stage:#e6e4ee; --line:#d6d3e2; --text:#111019; --text-dim:#343244; --text-mute:#676378;
     --check-a:#ffffff; --check-b:#e7e5ef; --accent:#7b62d6; --on-accent:#ffffff; --err:#c0392b;
   }
-  input[type=range]{accent-color:var(--accent);height:4px;width:100%;}
+  input[type=range]{appearance:none;-webkit-appearance:none;background:transparent;height:18px;width:100%;}
+  input[type=range]:active{opacity:1;}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;background:var(--line);border-radius:999px;}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;margin-top:-5px;border-radius:50%;border:2px solid var(--panel);background:var(--accent);opacity:1;box-shadow:0 1px 4px rgba(0,0,0,.25);}
+  input[type=range]:hover::-webkit-slider-thumb{background:color-mix(in srgb,var(--accent) 88%,#000);}
+  input[type=range]:active::-webkit-slider-thumb{background:color-mix(in srgb,var(--accent) 72%,#000);opacity:1;}
+  input[type=range]:focus::-webkit-slider-thumb{opacity:1;}
+  input[type=range]::-moz-range-track{height:4px;background:var(--line);border-radius:999px;}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;border:2px solid var(--panel);background:var(--accent);opacity:1;box-shadow:0 1px 4px rgba(0,0,0,.25);}
+  input[type=range]:active::-moz-range-thumb{background:color-mix(in srgb,var(--accent) 72%,#000);opacity:1;}
+  input[type=range]:focus::-moz-range-thumb{opacity:1;}
   select:focus,input:focus,textarea:focus{outline:1px solid color-mix(in srgb,var(--accent) 60%,transparent);}
   @keyframes rtpPulse{0%,100%{opacity:.45}50%{opacity:1}}
 
@@ -30,7 +40,7 @@
   .bar{display:flex;align-items:center;gap:16px;padding:0 16px;height:46px;border-bottom:1px solid var(--line);background:var(--panel);flex-shrink:0;}
   .brand{display:flex;align-items:center;gap:10px;}
   .dot{width:13px;height:13px;border-radius:3px;background:var(--accent);}
-  .brandname{font-weight:700;font-size:13px;letter-spacing:.14em;font-family:ui-monospace,Menlo,monospace;}
+  .brandname{font-weight:800;font-size:13px;letter-spacing:.14em;font-family:ui-monospace,Menlo,monospace;color:var(--text);}
   .meta{font-size:11px;color:var(--text-mute);border-left:1px solid var(--line);padding-left:10px;font-family:ui-monospace,monospace;}
   .spacer{flex:1;}
   .ghost{background:transparent;border:1px solid var(--line);color:var(--text-dim);border-radius:7px;padding:5px 11px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;}
@@ -60,6 +70,8 @@
   .row .lbl{font-size:12px;color:var(--text-dim);white-space:nowrap;}
   .num{width:74px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 7px;
     font:inherit;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;}
+  .readonlynum{display:inline-block;color:var(--accent);user-select:none;}
+  .colorpick{display:flex;align-items:center;gap:6px;}
   select{background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 7px;font:inherit;font-size:12px;}
   textarea{width:100%;height:76px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px;
     font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;}
@@ -164,7 +176,7 @@
       <div class="row" id="rowPixel"><span class="lbl">Pixel size</span>
         <input type="number" min="1" step="0.5" class="num" id="inPixel"></div>
       <div class="row" id="rowDetected" style="display:none;"><span class="lbl" style="color:var(--text-mute);">Detected</span>
-        <span class="val" style="color:var(--accent);" id="detectedVal">— px</span></div>
+        <span class="num readonlynum" id="detectedVal">auto</span></div>
       <label class="row nb checkrow" id="rowSnap"><span class="lbl">Snap grid</span><input type="checkbox" id="inSnap"></label>
 
       <div class="sec">Palette</div>
@@ -180,7 +192,11 @@
         <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Quantizer</span>
           <div style="display:flex;gap:3px;" id="quantGrp"></div></div>
         <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Colors</span>
-          <span class="hint" id="colorsAutoHint"></span><input type="number" min="1" max="512" class="num" id="inColors"></div>
+          <div class="colorpick">
+            <span class="num readonlynum" id="autoColorReadout">auto</span>
+            <button class="seg" id="autoColorsBtn" title="Use detected palette size">Auto</button>
+            <input type="number" min="1" max="512" class="num" id="inColors">
+          </div></div>
         <div id="colorPresets" style="display:flex;flex-wrap:wrap;gap:4px;padding-bottom:6px;"></div>
       </div>
       <div id="customWrap" style="display:none;padding-top:8px;">
@@ -304,14 +320,17 @@ buildSeg($('guardGrp'), [[0,'Off'],[1,'1px'],[2,'2px']], 'seg', v => set({ contr
 buildSeg($('themeGrp'), [['light','Light'],['dark','Dark']], 'seg', v => { state.theme = v; savePrefs(); applyTheme(); });
 buildSeg($('baGrp'), [['result','Result'],['original','Original'],['compare','Compare']], 'seg', v => { state.viewMode = v; updatePreviewImg(); render(); });
 buildSeg($('zoomGrp'), ZOOMS.map(v => [v, v + '×']), 'seg', v => setZoom(v));
-buildSeg($('colorPresets'), [['auto','Auto'],[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg',
-  v => v === 'auto' ? set({ autoColors: true }) : set({ autoColors: false, colors: v }));
+buildSeg($('colorPresets'), [[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg',
+  v => set({ autoColors: false, colors: v }));
+$('detectedVal').className = 'num readonlynum';
+$('detectedVal').removeAttribute('style');
 
 // ── inputs ──────────────────────────────────────────────────────────────────
 $('inSize').oninput = e => set({ size: clamp(parseInt(e.target.value), 1, Math.max(state.srcW, state.srcH) || 4096) });
 $('inPixel').oninput = e => set({ pixelSize: clamp(parseFloat(e.target.value), 1, 64) });
 $('inSnap').onchange = e => set({ snapGrid: e.target.checked });
 $('inColors').oninput = e => set({ autoColors: false, colors: clamp(parseInt(e.target.value), 1, 512) });
+$('autoColorsBtn').onclick = () => set({ autoColors: true });
 $('inTolerance').oninput = e => set({ bgTolerance: clamp(parseFloat(e.target.value), 0, 0.5) });
 $('inMerge').oninput = e => set({ paletteMerge: clamp(parseFloat(e.target.value), 0, 0.12) });
 $('inKeyColor').oninput = e => set({ keyColor: e.target.value });
@@ -715,13 +734,14 @@ function render() {
   segActive($('themeGrp'), s.theme);
   segActive($('baGrp'), s.viewMode);
   segActive($('zoomGrp'), s.zoom);
-  segActive($('colorPresets'), s.autoColors ? 'auto' : s.colors);
+  segActive($('colorPresets'), s.autoColors ? '' : s.colors);
+  $('autoColorsBtn').classList.toggle('on', s.autoColors);
   $('gridBtn').classList.toggle('on', s.showGrid);
 
   setVal($('inSize'), s.size);
   setVal($('inPixel'), s.pixelSize);
   $('inSnap').checked = s.snapGrid;
-  setVal($('inColors'), s.autoColors && s.autoColorsChosen ? s.autoColorsChosen : s.colors);
+  setVal($('inColors'), s.colors);
   setVal($('inHighlight'), s.highlightCollapse);
   setVal($('inShadow'), s.shadowCollapse);
   setVal($('inDominance'), s.dominantThreshold);
@@ -735,7 +755,7 @@ function render() {
   $('inPalette').value = s.palette;
   $('toleranceVal').textContent = s.bgTolerance.toFixed(2);
   $('mergeVal').textContent = s.paletteMerge.toFixed(3);
-  $('colorsAutoHint').textContent = s.autoColors ? (s.autoColorsChosen ? 'picked ' + s.autoColorsChosen : 'auto') : '';
+  $('autoColorReadout').textContent = s.autoColorsChosen || 'auto';
   $('highlightVal').textContent = s.highlightCollapse.toFixed(2);
   $('shadowVal').textContent = s.shadowCollapse.toFixed(2);
   $('strengthVal').textContent = s.ditherStrength.toFixed(2);
@@ -760,7 +780,7 @@ function render() {
   $('cleanupChangedVal').textContent = s.cleanup === 'none' ? '—' : s.cleanupRemoved + ' px';
   $('rowProtect').classList.toggle('dim', s.cleanup === 'none');
   $('rowDetected').style.display = s.sizeMode === 'auto' ? 'flex' : 'none';
-  $('detectedVal').textContent = (s.autoPixelSize == null ? '—' : s.autoPixelSize.toFixed(1)) + ' px';
+  $('detectedVal').textContent = s.autoPixelSize == null ? 'auto' : s.autoPixelSize.toFixed(1) + ' px';
   $('customWrap').style.display = s.palette === 'custom' ? 'block' : 'none';
   $('customErr').style.display = s.customError ? 'block' : 'none';
   $('customErr').textContent = s.customError;
