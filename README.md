@@ -67,8 +67,9 @@ Useful knobs:
 --dither bayer8     :: ordered 8x8 Bayer dithering
 --dither-strength .35
 --scale 8           :: nearest-neighbor preview scale
---cell detail       :: box, median, detail, or dominant
+--cell detail       :: box, median, detail, dominant, or adaptive
 --dominant-threshold .25
+--adaptive-iterations 3 :: EM passes for --cell adaptive (1-8, slower = sharper)
 --highlight-collapse .03
 --shadow-collapse .16
 --alpha-mode preserve :: preserve, binary, background-fill, or color-key
@@ -109,6 +110,13 @@ The default `detail` cell mode chooses between median and dominant per cell:
   the winner is below `--dominant-threshold`.
 - Cells use fractional coverage weights and alpha-weighted color stats, so partial
   source pixels and transparent edges are handled consistently.
+- The opt-in `adaptive` cell mode keeps the detail split but lets high-contrast
+  cells take their color from a content-adaptive kernel fit (Kopf et al.-style
+  EM in Oklab): one Gaussian kernel per cell migrates toward the region it
+  represents, so fuzzy AI-generated edges resolve to the majority side instead
+  of the median. The result still snaps to a real source color. It is slower
+  than the other modes and silently falls back to `detail` past a runtime
+  budget (reported on stderr / in the GUI).
 - Pixel-size modes can snap the sampling grid to the strongest detected edge phase
   (with a reported confidence), which helps when the source grid is offset by a few
   pixels; `--phase-x`/`--phase-y` override the detection.

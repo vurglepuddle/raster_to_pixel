@@ -55,11 +55,14 @@ pub fn apply_outline(img: &mut RgbaImage, mode: OutlineMode) -> OutlineStats {
             let mut is_edge = false;
             for (dx, dy) in [(-1isize, 0isize), (1, 0), (0, -1), (0, 1)] {
                 let (nx, ny) = (x as isize + dx, y as isize + dy);
-                if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
-                    if !opaque(img, nx as usize, ny as usize) {
-                        is_edge = true;
-                        break;
-                    }
+                if nx >= 0
+                    && ny >= 0
+                    && (nx as usize) < w
+                    && (ny as usize) < h
+                    && !opaque(img, nx as usize, ny as usize)
+                {
+                    is_edge = true;
+                    break;
                 }
             }
             if is_edge {

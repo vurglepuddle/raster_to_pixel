@@ -33,6 +33,15 @@ Local planning notes. This file is intentionally ignored by git for now.
   can download the current result palette as `.hex`; batch folder mode writes one
   PNG per supported top-level input image, with optional per-image palette/debug
   sidecar directories.
+- Content-adaptive cell mode (2026-07-05; user un-rejected it as opt-in after
+  the unfake-opt fork showed it can be fast): `--cell adaptive` / GUI "Adapt"
+  runs a Kopf et al.-style EM-C kernel fit in Oklab for busy cells; calm cells
+  keep the dominant vote; colors snap to real cell members
+  (`downsample::fit_adaptive_kernels`). `--adaptive-iterations` (1..=8,
+  default 3), hard runtime budget with silent fallback to `detail`
+  (`adaptive_fits_budget`; stderr notice, `X-Adaptive-Fallback` header + GUI
+  note, `adaptiveFallback` in `--debug-json`). Measured: ~1.1 s extra at 1 MP
+  / 3 iterations, exp()-bound. NOT yet field-tested on real fuzzy pixel art.
 
 ## Reference Repo Scan
 

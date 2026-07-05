@@ -15,8 +15,8 @@ use crate::{
     color::{linear_to_oklab, linear_to_srgb, oklab_to_srgb8, srgb8_to_oklab, srgb_to_linear},
     dither::ordered_dither,
     downsample::{
-        downsample_grid_with_dominant_threshold, downsample_with_dominant_threshold, CellMode,
-        SamplingGrid, DEFAULT_DOMINANT_THRESHOLD,
+        adaptive_fits_budget, downsample_grid_opts, CellMode, DownsampleOptions, SamplingGrid,
+        DEFAULT_ADAPTIVE_ITERATIONS, DEFAULT_DOMINANT_THRESHOLD, MAX_ADAPTIVE_ITERATIONS,
     },
     enhance::expand_contrast,
     kmeans::{build_palette, merge_close_entries, nearest},
@@ -89,6 +89,8 @@ pub struct Config {
     pub cell: CellMode,
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     pub dominant_threshold: f32,
+    /// EM refinement passes for `CellMode::Adaptive`, 1..=8. Ignored otherwise.
+    pub adaptive_iterations: u32,
     /// Adaptive-palette highlight cleanup. 0.0 disables; larger values collapse deeper highlights.
     pub highlight_collapse: f32,
     /// Adaptive-palette shadow cleanup. 0.0 disables; larger values collapse deeper shadows.
@@ -136,6 +138,7 @@ impl Default for Config {
             alpha_threshold: 128,
             cell: CellMode::Detail,
             dominant_threshold: DEFAULT_DOMINANT_THRESHOLD,
+            adaptive_iterations: DEFAULT_ADAPTIVE_ITERATIONS,
             highlight_collapse: DEFAULT_HIGHLIGHT_COLLAPSE,
             shadow_collapse: DEFAULT_SHADOW_COLLAPSE,
             alpha_mode: AlphaMode::Preserve,
@@ -177,6 +180,11 @@ impl Config {
         }
         if !(0.0..=1.0).contains(&self.dominant_threshold) || !self.dominant_threshold.is_finite() {
             return Err("dominant_threshold must be a finite number in 0.0..=1.0".into());
+        }
+        if !(1..=MAX_ADAPTIVE_ITERATIONS).contains(&self.adaptive_iterations) {
+            return Err(format!(
+                "adaptive_iterations must be in 1..={MAX_ADAPTIVE_ITERATIONS}"
+            ));
         }
         if !(0.0..=1.0).contains(&self.highlight_collapse) || !self.highlight_collapse.is_finite() {
             return Err("highlight_collapse must be a finite number in 0.0..=1.0".into());
@@ -225,6 +233,9 @@ pub struct ConvertResult {
     pub contrast_expanded: usize,
     /// What the outline pass did on the output grid.
     pub outline: OutlineStats,
+    /// True when `CellMode::Adaptive` exceeded its runtime budget and the
+    /// downsample silently used `Detail` instead.
+    pub adaptive_fallback: bool,
 }
 
 impl ConvertResult {
@@ -252,7 +263,8 @@ impl ConvertResult {
                 "  \"requestedPixelSize\": {}, \"detectedPixelSize\": {},\n",
                 "  \"snapGrid\": {}, \"gridPhaseX\": {}, \"gridPhaseY\": {}, \"phaseConfidence\": {},\n",
                 "  \"paletteLen\": {}, \"autoColors\": {},\n",
-                "  \"cellMode\": \"{:?}\", \"alphaMode\": \"{:?}\", \"alphaRemoved\": {},\n",
+                "  \"cellMode\": \"{:?}\", \"adaptiveIterations\": {}, \"adaptiveFallback\": {},\n",
+                "  \"alphaMode\": \"{:?}\", \"alphaRemoved\": {},\n",
                 "  \"cleanupPreset\": \"{:?}\", \"pinholesFilled\": {}, \"haloRemoved\": {}, ",
                 "\"jaggiesRemoved\": {}, \"orphansRemoved\": {},\n",
                 "  \"quantizer\": \"{:?}\", \"paletteMerge\": {:.4},\n",
@@ -273,6 +285,8 @@ impl ConvertResult {
             self.palette_len,
             opt_usize(self.auto_colors),
             cfg.cell,
+            cfg.adaptive_iterations,
+            self.adaptive_fallback,
             cfg.alpha_mode,
             self.alpha_removed,
             cfg.cleanup,
@@ -337,28 +351,33 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
     let fixed_palette = resolve_palette(&cfg.palette)?;
 
     let linear = rgba8_to_linear(work);
-    let small = if let Some(sampling) = grid.sampling {
-        downsample_grid_with_dominant_threshold(
-            &linear,
-            src_w as usize,
-            src_h as usize,
+    let sampling = grid.sampling.unwrap_or(SamplingGrid {
+        origin_x: 0.0,
+        origin_y: 0.0,
+        cell_w: src_w as f64 / grid.out_w as f64,
+        cell_h: src_h as f64 / grid.out_h as f64,
+    });
+    let adaptive_fallback = cfg.cell == CellMode::Adaptive
+        && !adaptive_fits_budget(
             grid.out_w as usize,
             grid.out_h as usize,
-            sampling,
-            cfg.cell,
-            cfg.dominant_threshold,
-        )
-    } else {
-        downsample_with_dominant_threshold(
-            &linear,
-            src_w as usize,
-            src_h as usize,
-            grid.out_w as usize,
-            grid.out_h as usize,
-            cfg.cell,
-            cfg.dominant_threshold,
-        )
-    };
+            sampling.cell_w,
+            sampling.cell_h,
+            cfg.adaptive_iterations,
+        );
+    let small = downsample_grid_opts(
+        &linear,
+        src_w as usize,
+        src_h as usize,
+        grid.out_w as usize,
+        grid.out_h as usize,
+        sampling,
+        DownsampleOptions {
+            mode: cfg.cell,
+            dominant_threshold: cfg.dominant_threshold,
+            adaptive_iterations: cfg.adaptive_iterations,
+        },
+    );
 
     let auto_colors = if cfg.auto_colors && matches!(cfg.palette, PaletteChoice::Adaptive) {
         Some(auto_color_count(&small, cfg.alpha_threshold as f32 / 255.0))
@@ -408,6 +427,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         cleanup,
         contrast_expanded,
         outline,
+        adaptive_fallback,
     })
 }
 
@@ -629,7 +649,9 @@ pub(crate) fn target_size_from_pixel_size(src_w: u32, src_h: u32, pixel_size: f6
 
 pub(crate) fn detect_pixel_size(src: &RgbaImage) -> Option<f64> {
     if let Some(pixel_size) = detect_pixel_size_from_runs(src) {
-        return Some(pixel_size);
+        if run_candidate_has_cell_coherence(src, pixel_size) {
+            return Some(pixel_size);
+        }
     }
 
     let (cols, rows) = edge_profiles(src);
@@ -646,11 +668,22 @@ pub(crate) fn detect_pixel_size(src: &RgbaImage) -> Option<f64> {
         }
         (Some(x), None) => Some(x),
         (None, Some(y)) => Some(y),
-        (None, None) => None,
+        // If no larger grid is visible, the safest auto answer is 1:1. This
+        // covers deliberately mangled pixel art that is already at its target
+        // pixel resolution; shrinking it to the generic target size destroys it.
+        (None, None) => Some(1.0),
     }?;
 
     let upper = (src.width().min(src.height()) as f64 / 2.0).clamp(1.0, MAX_AUTO_PIXEL_SIZE);
-    Some(detected.clamp(1.0, upper))
+    let detected = detected.clamp(1.0, upper);
+    if detected >= 2.0 {
+        let confident = detect_grid_phase_with_confidence(src, detected)
+            .is_some_and(|(_, confidence)| confidence >= MIN_EDGE_AUTO_PHASE_CONFIDENCE);
+        if !confident {
+            return Some(1.0);
+        }
+    }
+    Some(detected)
 }
 
 /// Detect the strongest grid phase and how decisive it was. Confidence is
@@ -733,6 +766,8 @@ fn best_phase_for_step(profile: &[f64], step: usize) -> Option<PhaseScore> {
 
 const MAX_AUTO_PIXEL_SIZE: f64 = 32.0;
 const MIN_AUTO_PIXEL_SIZE: usize = 3;
+const MIN_EDGE_AUTO_PHASE_CONFIDENCE: f32 = 0.08;
+const MIN_RUN_CELL_COHERENCE_P25: f32 = 0.55;
 
 fn detect_pixel_size_from_runs(src: &RgbaImage) -> Option<f64> {
     let max = MAX_AUTO_PIXEL_SIZE as usize;
@@ -818,6 +853,55 @@ fn push_run_length(run_lengths: &mut Vec<usize>, len: usize, max: usize) {
     if (MIN_AUTO_PIXEL_SIZE..=max).contains(&len) {
         run_lengths.push(len);
     }
+}
+
+fn run_candidate_has_cell_coherence(src: &RgbaImage, pixel_size: f64) -> bool {
+    let step = pixel_size.round();
+    if step < 2.0 || (pixel_size - step).abs() > 0.2 {
+        return pixel_size <= 1.0;
+    }
+    let step = step as usize;
+    let (w, h) = src.dimensions();
+    if w < step as u32 || h < step as u32 {
+        return false;
+    }
+    let phase = detect_grid_phase_with_confidence(src, pixel_size)
+        .map(|(phase, _)| phase)
+        .unwrap_or((0, 0));
+    let x_start = phase.0.min(w.saturating_sub(1)) as usize;
+    let y_start = phase.1.min(h.saturating_sub(1)) as usize;
+    let w = w as usize;
+    let h = h as usize;
+    let mut dominant_counts = Vec::new();
+    let area = step * step;
+    // coarse_key ranges 0..=512.
+    let mut counts = [0u16; 513];
+
+    let mut y0 = y_start;
+    while y0 + step <= h {
+        let mut x0 = x_start;
+        while x0 + step <= w {
+            counts.fill(0);
+            let mut best = 0u16;
+            for y in y0..y0 + step {
+                for x in x0..x0 + step {
+                    let key = coarse_key(src.get_pixel(x as u32, y as u32)) as usize;
+                    counts[key] += 1;
+                    best = best.max(counts[key]);
+                }
+            }
+            dominant_counts.push(best);
+            x0 += step;
+        }
+        y0 += step;
+    }
+
+    if dominant_counts.len() < 16 {
+        return true;
+    }
+    dominant_counts.sort_unstable();
+    let p25 = dominant_counts[dominant_counts.len() / 4] as f32 / area as f32;
+    p25 >= MIN_RUN_CELL_COHERENCE_P25
 }
 
 fn edge_profiles(src: &RgbaImage) -> (Vec<f64>, Vec<f64>) {
@@ -1216,6 +1300,62 @@ mod tests {
     }
 
     #[test]
+    fn auto_pixel_size_falls_back_to_one_to_one_when_no_grid_is_detected() {
+        let img = RgbaImage::from_pixel(37, 23, Rgba([128, 128, 128, 255]));
+        assert_eq!(detect_pixel_size(&img), Some(1.0));
+
+        let config = Config {
+            auto_pixel_size: true,
+            size: 8,
+            ..cfg()
+        };
+        let grid = target_grid(&img, &config);
+        assert_eq!((grid.out_w, grid.out_h), (37, 23));
+        assert_eq!(grid.detected_pixel_size, Some(1.0));
+    }
+
+    #[test]
+    fn run_candidate_coherence_rejects_mixed_cells() {
+        let mut mixed = RgbaImage::new(32, 32);
+        let mut coherent = RgbaImage::new(32, 32);
+        for y in 0..mixed.height() {
+            for x in 0..mixed.width() {
+                let mixed_color = if (x + y) % 2 == 0 {
+                    Rgba([40, 70, 120, 255])
+                } else {
+                    Rgba([210, 190, 90, 255])
+                };
+                mixed.put_pixel(x, y, mixed_color);
+
+                let coherent_color = if ((x / 4) + (y / 4)) % 2 == 0 {
+                    Rgba([40, 70, 120, 255])
+                } else {
+                    Rgba([210, 190, 90, 255])
+                };
+                coherent.put_pixel(x, y, coherent_color);
+            }
+        }
+        assert!(!run_candidate_has_cell_coherence(&mixed, 4.0));
+        assert!(run_candidate_has_cell_coherence(&coherent, 4.0));
+    }
+
+    #[test]
+    fn auto_pixel_size_rejects_one_to_one_texture_with_coarse_runs() {
+        let mut img = RgbaImage::new(32, 32);
+        for y in 0..img.height() {
+            for x in 0..img.width() {
+                let color = if (x + y) % 2 == 0 {
+                    Rgba([40, 70, 120, 255])
+                } else {
+                    Rgba([210, 190, 90, 255])
+                };
+                img.put_pixel(x, y, color);
+            }
+        }
+        assert_eq!(detect_pixel_size(&img), Some(1.0));
+    }
+
+    #[test]
     fn explicit_pixel_size_wins_over_auto_detection() {
         let mut img = RgbaImage::new(60, 40);
         for p in img.pixels_mut() {
@@ -1478,6 +1618,48 @@ mod tests {
             b.image.as_raw(),
             "convert must be deterministic"
         );
+    }
+
+    #[test]
+    fn adaptive_cell_mode_converts_deterministically_within_budget() {
+        let mut img = RgbaImage::new(64, 48);
+        for (i, p) in img.pixels_mut().enumerate() {
+            let v = (i % 251) as u8;
+            *p = Rgba([v, v.wrapping_mul(3), v.wrapping_mul(7), 255]);
+        }
+        let config = Config {
+            size: 16,
+            colors: 8,
+            cell: CellMode::Adaptive,
+            ..cfg()
+        };
+        let a = convert(&img, &config).unwrap();
+        let b = convert(&img, &config).unwrap();
+        assert_eq!((a.out_w, a.out_h), (16, 12));
+        assert!(
+            !a.adaptive_fallback,
+            "64x48 with 4px cells is within budget"
+        );
+        assert_eq!(
+            a.image.as_raw(),
+            b.image.as_raw(),
+            "adaptive convert must be deterministic"
+        );
+        let json = a.diagnostics_json(&config);
+        assert!(json.contains("\"cellMode\": \"Adaptive\""));
+        assert!(json.contains("\"adaptiveFallback\": false"));
+        assert_eq!(json.matches('{').count(), json.matches('}').count());
+    }
+
+    #[test]
+    fn adaptive_iterations_out_of_range_is_rejected() {
+        for bad in [0u32, MAX_ADAPTIVE_ITERATIONS + 1] {
+            let config = Config {
+                adaptive_iterations: bad,
+                ..cfg()
+            };
+            assert!(config.validate().is_err(), "iterations {bad} must fail");
+        }
     }
 
     #[test]

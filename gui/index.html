@@ -222,6 +222,9 @@
       <div class="segwrap" id="cellGrp"></div>
       <div class="row nb" id="rowDominance" style="padding-top:10px;"><span class="lbl">Dominance</span>
         <input type="range" min="0" max="1" step="0.05" id="inDominance"><span class="val" id="dominanceVal">0.25</span></div>
+      <div class="row nb" id="rowAdaptIter" title="EM refinement passes for the Adapt cell mode. More is slower and sharper."><span class="lbl">Iterations</span>
+        <input type="range" min="1" max="8" step="1" id="inAdaptIter"><span class="val" id="adaptIterVal">3</span></div>
+      <div class="customerr" id="adaptFallbackNote" style="display:none;">Too big for Adapt — Detail was used. Lower iterations or the source size.</div>
       <div class="row nb" title="Expand tiny high-contrast details before downsampling so they survive cell voting."><span class="lbl">Detail guard</span>
         <div style="display:flex;gap:3px;" id="guardGrp"></div></div>
 
@@ -287,7 +290,8 @@ const state = {
   sizeMode: 'auto', size: 64, pixelSize: 6, snapGrid: true,
   colors: 16, palette: 'adaptive', customHex: '', autoColors: true,
   highlightCollapse: 0.03, shadowCollapse: 0.16,
-  cell: 'detail', dominantThreshold: 0.25, dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
+  cell: 'detail', dominantThreshold: 0.25, adaptiveIterations: 3, adaptiveFallback: false,
+  dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   alphaMode: 'preserve', bgTolerance: 0.10, keyColor: '#00ff00',
   cleanup: 'none', protectDetails: true, outline: 'none',
   quantizer: 'kmeans', paletteMerge: 0, contrastExpansion: 0,
@@ -314,7 +318,7 @@ function segActive(container, active) {
 }
 
 buildSeg($('sizeModeGrp'), [['auto','Auto'],['pixel','Pixel'],['size','Fixed']], 'seg-join', v => set({ sizeMode: v }));
-buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant']], 'seg-join', v => set({ cell: v }));
+buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant'],['adaptive','Adapt']], 'seg-join', v => set({ cell: v }));
 buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
 buildSeg($('alphaModeGrp'), [['preserve','Keep'],['binary','Binary'],['bgfill','BG Fill'],['key','Key']], 'seg-join', v => set({ alphaMode: v }));
 buildSeg($('cleanupGrp'), [['none','Off'],['conservative','Cons'],['balanced','Bal'],['aggressive','Aggr']], 'seg-join', v => set({ cleanup: v }));
@@ -343,6 +347,7 @@ $('gridBtn').onclick = () => { state.showGrid = !state.showGrid; updatePreviewIm
 $('inHighlight').oninput = e => set({ highlightCollapse: clamp(parseFloat(e.target.value), 0, 0.25) });
 $('inShadow').oninput = e => set({ shadowCollapse: clamp(parseFloat(e.target.value), 0, 0.35) });
 $('inDominance').oninput = e => set({ dominantThreshold: clamp(parseFloat(e.target.value), 0, 1) });
+$('inAdaptIter').oninput = e => set({ adaptiveIterations: clamp(parseInt(e.target.value), 1, 8) });
 $('inStrength').oninput = e => set({ ditherStrength: clamp(parseFloat(e.target.value), 0, 1) });
 $('inAlpha').oninput = e => set({ alphaThreshold: clamp(parseInt(e.target.value), 0, 255) });
 $('inCustom').oninput = e => set({ customHex: e.target.value });
@@ -360,6 +365,7 @@ $('fileInput').onchange = e => loadFile(e.target.files && e.target.files[0]);
 // scale & compare only affect export, not the preview, so no re-render of preview needed
 function set(patch, preview = true) {
   Object.assign(state, patch);
+  if (preview) state.adaptiveFallback = false;
   render();
   if (preview) schedulePreview();
 }
@@ -579,7 +585,7 @@ function updatePreviewImg() {
 
 function settingsParams() {
   const p = new URLSearchParams();
-  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','paletteMerge','quantizer','cell','dominantThreshold','contrastExpansion','dither','ditherStrength','alphaThreshold','alphaMode','bgTolerance','cleanup','outline','scale'].forEach(k => p.set(k, state[k]));
+  ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','paletteMerge','quantizer','cell','dominantThreshold','adaptiveIterations','contrastExpansion','dither','ditherStrength','alphaThreshold','alphaMode','bgTolerance','cleanup','outline','scale'].forEach(k => p.set(k, state[k]));
   p.set('colorKey', state.keyColor.replace('#', ''));
   p.set('protectDetails', state.protectDetails ? 'true' : 'false');
   p.set('autoColors', state.autoColors ? 'true' : 'false');
@@ -623,6 +629,7 @@ async function runPreview() {
     state.gridPhase = res.headers.get('X-Grid-Phase') || '';
     state.phaseConf = res.headers.get('X-Phase-Confidence') || '';
     state.cleanupRemoved = +res.headers.get('X-Cleanup-Removed') || 0;
+    state.adaptiveFallback = res.headers.get('X-Adaptive-Fallback') === '1';
     const autoChosen = res.headers.get('X-Auto-Colors');
     if (autoChosen) state.autoColorsChosen = +autoChosen;
     const palHex = res.headers.get('X-Palette') || '';
@@ -644,7 +651,7 @@ async function loadFile(file) {
   cancelPreview();
   state.fileName = file.name;
   state.hasImage = false; state.viewMode = 'result'; state.outW = 0; state.outH = 0;
-  state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.autoColorsChosen = null; state.swatches = []; state.customError = '';
+  state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.autoColorsChosen = null; state.adaptiveFallback = false; state.swatches = []; state.customError = '';
   resetPan();
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   if (originalURL) URL.revokeObjectURL(originalURL);
@@ -750,6 +757,7 @@ function render() {
   setVal($('inHighlight'), s.highlightCollapse);
   setVal($('inShadow'), s.shadowCollapse);
   setVal($('inDominance'), s.dominantThreshold);
+  setVal($('inAdaptIter'), s.adaptiveIterations);
   setVal($('inStrength'), s.ditherStrength);
   setVal($('inAlpha'), s.alphaThreshold);
   setVal($('inTolerance'), s.bgTolerance);
@@ -765,6 +773,7 @@ function render() {
   $('shadowVal').textContent = s.shadowCollapse.toFixed(2);
   $('strengthVal').textContent = s.ditherStrength.toFixed(2);
   $('dominanceVal').textContent = s.dominantThreshold.toFixed(2);
+  $('adaptIterVal').textContent = s.adaptiveIterations;
   $('alphaVal').textContent = s.alphaThreshold;
   $('scaleVal').textContent = s.scale + '×';
   $('compareBtn').textContent = 'Compare ' + (s.compare ? 'On' : 'Off');
@@ -777,7 +786,9 @@ function render() {
   $('colorsBlock').classList.toggle('dim', s.palette !== 'adaptive');
   $('inColors').classList.toggle('dim', s.autoColors);
   $('cleanupBlock').classList.toggle('dim', s.palette !== 'adaptive');
-  $('rowDominance').classList.toggle('dim', s.cell !== 'dominant' && s.cell !== 'detail');
+  $('rowDominance').classList.toggle('dim', s.cell !== 'dominant' && s.cell !== 'detail' && s.cell !== 'adaptive');
+  $('rowAdaptIter').style.display = s.cell === 'adaptive' ? 'flex' : 'none';
+  $('adaptFallbackNote').style.display = s.cell === 'adaptive' && s.adaptiveFallback ? 'block' : 'none';
   $('rowStrength').classList.toggle('dim', s.dither === 'none');
   $('rowTolerance').classList.toggle('dim', s.alphaMode !== 'bgfill' && s.alphaMode !== 'key');
   $('rowKeyColor').style.display = s.alphaMode === 'key' ? 'flex' : 'none';

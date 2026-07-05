@@ -8,7 +8,7 @@ use clap::{Parser, ValueEnum};
 use image::{Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
-    downsample::CellMode,
+    downsample::{CellMode, DEFAULT_ADAPTIVE_ITERATIONS, MAX_ADAPTIVE_ITERATIONS},
     image_io,
     morphology::CleanupPreset,
     outline::OutlineMode,
@@ -78,6 +78,10 @@ struct Args {
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     #[arg(long, default_value_t = 0.25)]
     dominant_threshold: f32,
+
+    /// EM refinement passes for --cell adaptive, 1..=8. More is slower and sharper.
+    #[arg(long, default_value_t = DEFAULT_ADAPTIVE_ITERATIONS)]
+    adaptive_iterations: u32,
 
     /// Adaptive palette highlight cleanup. 0 disables; larger values collapse deeper highlights.
     #[arg(long, default_value_t = DEFAULT_HIGHLIGHT_COLLAPSE)]
@@ -158,6 +162,7 @@ enum CellModeArg {
     Median,
     Detail,
     Dominant,
+    Adaptive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -254,6 +259,7 @@ impl From<CellModeArg> for CellMode {
             CellModeArg::Median => CellMode::Median,
             CellModeArg::Detail => CellMode::Detail,
             CellModeArg::Dominant => CellMode::Dominant,
+            CellModeArg::Adaptive => CellMode::Adaptive,
         }
     }
 }
@@ -319,6 +325,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!(
             "contrast expansion repainted {} source pixels",
             result.contrast_expanded
+        );
+    }
+    if result.adaptive_fallback {
+        eprintln!(
+            "adaptive cell mode exceeded its runtime budget; used detail instead \
+             (lower --adaptive-iterations or the source resolution)"
         );
     }
     if let Some([r, g, b]) = result.outline.outline_color {
@@ -548,6 +560,11 @@ fn validate_args(args: &Args) -> Result<(), Box<dyn Error>> {
     if args.contrast_expansion > 4 {
         return Err("--contrast-expansion must be in 0..=4".into());
     }
+    if !(1..=MAX_ADAPTIVE_ITERATIONS).contains(&args.adaptive_iterations) {
+        return Err(
+            format!("--adaptive-iterations must be in 1..={MAX_ADAPTIVE_ITERATIONS}").into(),
+        );
+    }
     if args.input.is_dir() && args.output.exists() && !args.output.is_dir() {
         return Err("directory input requires an output directory".into());
     }
@@ -583,6 +600,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         alpha_threshold: args.alpha_threshold,
         cell: args.cell.into(),
         dominant_threshold: args.dominant_threshold,
+        adaptive_iterations: args.adaptive_iterations,
         highlight_collapse: args.highlight_collapse,
         shadow_collapse: args.shadow_collapse,
         alpha_mode: args.alpha_mode.into(),
