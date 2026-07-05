@@ -5,10 +5,11 @@ use std::{
 };
 
 use clap::{Parser, ValueEnum};
-use image::{ImageReader, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
     downsample::CellMode,
+    image_io,
     morphology::CleanupPreset,
     outline::OutlineMode,
     palettes,
@@ -276,7 +277,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return run_batch(&args, &cfg);
     }
 
-    let src = ImageReader::open(&args.input)?.decode()?.to_rgba8();
+    let src = image_io::load_rgba_from_path(&args.input)?;
     let (src_w, src_h) = src.dimensions();
 
     let result = pipeline::convert(&src, &cfg)?;
@@ -410,7 +411,7 @@ fn convert_batch_file(
     debug_grid_dir: Option<&Path>,
     cfg: &Config,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let src = ImageReader::open(input)?.decode()?.to_rgba8();
+    let src = image_io::load_rgba_from_path(input)?;
     let result = pipeline::convert(&src, cfg)?;
     let out_path = sidecar_path(output_dir, input, "", "png")?;
     result.image.save(&out_path)?;
