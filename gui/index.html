@@ -54,7 +54,9 @@
     box-shadow:0 6px 30px rgba(0,0,0,.45);border-radius:2px;display:none;user-select:none;-webkit-user-drag:none;}
   #preview{image-rendering:pixelated;}
   #comparePreview{image-rendering:auto;pointer-events:none;z-index:2;}
-  #compareDivider{position:absolute;top:50%;width:2px;background:var(--accent);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 0 12px rgba(0,0,0,.45);z-index:3;display:none;cursor:ew-resize;}
+  #compareDivider{position:absolute;top:50%;width:34px;background:transparent;z-index:3;display:none;cursor:ew-resize;touch-action:none;}
+  #compareDivider::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;transform:translateX(-50%);background:var(--accent);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 0 12px rgba(0,0,0,.45);}
+  #compareDivider::after{content:"< >";position:absolute;left:50%;top:50%;width:30px;height:30px;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;border-radius:50%;border:1px solid color-mix(in srgb,var(--accent) 72%,var(--line));background:color-mix(in srgb,var(--panel) 92%,transparent);box-shadow:0 2px 10px rgba(0,0,0,.35);color:var(--accent);font:800 11px/1 ui-monospace,Menlo,monospace;letter-spacing:-1px;}
   #empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--text-mute);font-size:13px;pointer-events:none;}
   #empty b{color:var(--text-dim);font-size:15px;}
   .overlay{position:absolute;display:flex;align-items:center;gap:7px;background:color-mix(in srgb,var(--panel) 82%,transparent);
@@ -68,10 +70,12 @@
   .row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);}
   .row.nb{border-bottom:none;}
   .row .lbl{font-size:12px;color:var(--text-dim);white-space:nowrap;}
-  .num{width:74px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 7px;
+  .num{width:74px;height:30px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:5px 7px;
     font:inherit;font-size:12px;text-align:right;font-variant-numeric:tabular-nums;}
-  .readonlynum{display:inline-block;color:var(--accent);user-select:none;}
+  .readonlynum{display:inline-flex;align-items:center;justify-content:flex-end;color:var(--text-mute);user-select:none;}
+  .readonlynum.on{color:var(--accent);}
   .colorpick{display:flex;align-items:center;gap:6px;}
+  .colorpick .seg{height:30px;padding:0 9px;display:inline-flex;align-items:center;}
   select{background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 7px;font:inherit;font-size:12px;}
   textarea{width:100%;height:76px;background:var(--panel-2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px;
     font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;}
@@ -194,7 +198,7 @@
         <div class="row nb" style="border-top:1px solid var(--line);"><span class="lbl">Colors</span>
           <div class="colorpick">
             <span class="num readonlynum" id="autoColorReadout">auto</span>
-            <button class="seg" id="autoColorsBtn" title="Use detected palette size">Auto</button>
+            <button class="seg" id="autoColorsBtn" title="Use detected palette size">auto</button>
             <input type="number" min="1" max="512" class="num" id="inColors">
           </div></div>
         <div id="colorPresets" style="display:flex;flex-wrap:wrap;gap:4px;padding-bottom:6px;"></div>
@@ -528,7 +532,7 @@ function updateCompareDivider() {
   divider.style.display = 'block';
   divider.style.left = `calc(50% + ${state.panX + offset}px)`;
   divider.style.height = d.h + 'px';
-  divider.style.transform = `translateY(calc(-50% + ${state.panY}px))`;
+  divider.style.transform = `translate(-50%, calc(-50% + ${state.panY}px))`;
 }
 function setZoom(next, anchor) {
   next = ZOOMS.includes(next) ? next : ZOOMS[0];
@@ -620,7 +624,7 @@ async function runPreview() {
     state.phaseConf = res.headers.get('X-Phase-Confidence') || '';
     state.cleanupRemoved = +res.headers.get('X-Cleanup-Removed') || 0;
     const autoChosen = res.headers.get('X-Auto-Colors');
-    state.autoColorsChosen = autoChosen ? +autoChosen : null;
+    if (autoChosen) state.autoColorsChosen = +autoChosen;
     const palHex = res.headers.get('X-Palette') || '';
     state.swatches = palHex ? palHex.split(',').filter(Boolean).map(h => '#' + h) : [];
     const blob = await res.blob();
@@ -640,7 +644,7 @@ async function loadFile(file) {
   cancelPreview();
   state.fileName = file.name;
   state.hasImage = false; state.viewMode = 'result'; state.outW = 0; state.outH = 0;
-  state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.swatches = []; state.customError = '';
+  state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.autoColorsChosen = null; state.swatches = []; state.customError = '';
   resetPan();
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   if (originalURL) URL.revokeObjectURL(originalURL);
@@ -736,12 +740,13 @@ function render() {
   segActive($('zoomGrp'), s.zoom);
   segActive($('colorPresets'), s.autoColors ? '' : s.colors);
   $('autoColorsBtn').classList.toggle('on', s.autoColors);
+  $('autoColorReadout').classList.toggle('on', s.autoColors);
   $('gridBtn').classList.toggle('on', s.showGrid);
 
   setVal($('inSize'), s.size);
   setVal($('inPixel'), s.pixelSize);
   $('inSnap').checked = s.snapGrid;
-  setVal($('inColors'), s.colors);
+  setVal($('inColors'), s.autoColors ? '' : s.colors);
   setVal($('inHighlight'), s.highlightCollapse);
   setVal($('inShadow'), s.shadowCollapse);
   setVal($('inDominance'), s.dominantThreshold);
