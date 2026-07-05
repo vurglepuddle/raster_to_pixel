@@ -13,7 +13,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Cursor, Read, Write};
+use std::io::{BufRead, BufReader, Cursor, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use image::{ImageFormat, Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
-    downsample::CellMode,
+    downsample::{CellMode, DEFAULT_ADAPTIVE_ITERATIONS, MAX_ADAPTIVE_ITERATIONS},
     image_io,
     morphology::CleanupPreset,
     outline::OutlineMode,
@@ -77,7 +77,7 @@ fn main() {
         match stream {
             Ok(stream) => {
                 std::thread::spawn(move || {
-                    if let Err(e) = handle(stream) {
+                    if let Err(e) = handle(stream).filter_client_disconnect() {
                         eprintln!("connection error: {e}");
                     }
                 });
@@ -85,6 +85,26 @@ fn main() {
             Err(e) => eprintln!("accept error: {e}"),
         }
     }
+}
+
+trait IgnoreClientDisconnect {
+    fn filter_client_disconnect(self) -> std::io::Result<()>;
+}
+
+impl IgnoreClientDisconnect for std::io::Result<()> {
+    fn filter_client_disconnect(self) -> std::io::Result<()> {
+        match self {
+            Err(e) if is_expected_disconnect(&e) => Ok(()),
+            other => other,
+        }
+    }
+}
+
+fn is_expected_disconnect(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+    ) || matches!(e.raw_os_error(), Some(10053 | 10054))
 }
 
 /// Bind 127.0.0.1, trying a few ports up from `start` if the first is taken.
@@ -281,6 +301,10 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
         format!("X-Phase-Confidence: {confidence}"),
         format!("X-Auto-Colors: {auto_colors}"),
         format!("X-Cleanup-Removed: {}", result.cleanup.total()),
+        format!(
+            "X-Adaptive-Fallback: {}",
+            if result.adaptive_fallback { 1 } else { 0 }
+        ),
         format!("X-Palette: {palette_hex}"),
     ];
     if !preview {
@@ -387,6 +411,7 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         "box" => CellMode::Box,
         "median" => CellMode::Median,
         "dominant" => CellMode::Dominant,
+        "adaptive" => CellMode::Adaptive,
         _ => CellMode::Detail,
     };
     let dither = match get("dither").unwrap_or("none") {
@@ -434,6 +459,11 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         alpha_threshold: parse_or::<u16>(get("alphaThreshold"), 128).min(255) as u8,
         cell,
         dominant_threshold: parse_or::<f32>(get("dominantThreshold"), 0.25).clamp(0.0, 1.0),
+        adaptive_iterations: parse_or::<u32>(
+            get("adaptiveIterations"),
+            DEFAULT_ADAPTIVE_ITERATIONS,
+        )
+        .clamp(1, MAX_ADAPTIVE_ITERATIONS),
         highlight_collapse: parse_or::<f32>(get("highlightCollapse"), DEFAULT_HIGHLIGHT_COLLAPSE)
             .clamp(0.0, 1.0),
         shadow_collapse: parse_or::<f32>(get("shadowCollapse"), DEFAULT_SHADOW_COLLAPSE)

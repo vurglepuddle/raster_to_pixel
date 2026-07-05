@@ -7,6 +7,9 @@ Algorithm and product-design references consulted during development:
 
 - unfake by Benjamin Paine, MIT License
   https://github.com/painebenjamin/unfake.py
+  (including its content-adaptive downscaling port of Kopf, Shamir & Peers,
+  "Content-Adaptive Image Downscaling", SIGGRAPH Asia 2013 — reimplemented
+  here independently in Oklab)
 
 - Sprite Fusion Pixel Snapper by Hugo Duprez, MIT License
   https://github.com/Hugo-Dz/spritefusion-pixel-snapper
