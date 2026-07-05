@@ -40,8 +40,11 @@
   .stage{position:relative;flex:1;min-width:0;overflow:hidden;cursor:grab;touch-action:none;
     background:repeating-conic-gradient(var(--check-a) 0% 25%,var(--check-b) 0% 50%) 50% / 22px 22px;}
   .stage.dragging{cursor:grabbing;}
-  #preview{position:absolute;left:50%;top:50%;max-width:none;max-height:none;image-rendering:pixelated;
+  #preview,#comparePreview{position:absolute;left:50%;top:50%;max-width:none;max-height:none;
     box-shadow:0 6px 30px rgba(0,0,0,.45);border-radius:2px;display:none;user-select:none;-webkit-user-drag:none;}
+  #preview{image-rendering:pixelated;}
+  #comparePreview{image-rendering:auto;pointer-events:none;z-index:2;}
+  #compareDivider{position:absolute;top:50%;width:2px;background:var(--accent);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 0 12px rgba(0,0,0,.45);z-index:3;display:none;cursor:ew-resize;}
   #empty{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--text-mute);font-size:13px;pointer-events:none;}
   #empty b{color:var(--text-dim);font-size:15px;}
   .overlay{position:absolute;display:flex;align-items:center;gap:7px;background:color-mix(in srgb,var(--panel) 82%,transparent);
@@ -135,6 +138,8 @@
     <!-- stage -->
     <div class="stage" id="stage">
       <img id="preview" alt="preview" draggable="false">
+      <img id="comparePreview" alt="compare original" draggable="false">
+      <div id="compareDivider" title="Drag to compare original and result"></div>
       <div id="gridOverlay"></div>
       <div id="empty"><b>Drop an image here</b><span>or click “Open…” — PNG, JPG, or WebP</span></div>
       <div class="overlay" id="renderInd" style="top:14px;left:14px;display:none;">
@@ -158,9 +163,9 @@
         <input type="number" min="1" class="num" id="inSize"></div>
       <div class="row" id="rowPixel"><span class="lbl">Pixel size</span>
         <input type="number" min="1" step="0.5" class="num" id="inPixel"></div>
-      <div class="row nb" id="rowDetected" style="display:none;"><span class="lbl" style="color:var(--text-mute);">Detected</span>
+      <div class="row" id="rowDetected" style="display:none;"><span class="lbl" style="color:var(--text-mute);">Detected</span>
         <span class="val" style="color:var(--accent);" id="detectedVal">— px</span></div>
-      <label class="row nb checkrow"><span class="lbl">Snap grid</span><input type="checkbox" id="inSnap"></label>
+      <label class="row nb checkrow" id="rowSnap"><span class="lbl">Snap grid</span><input type="checkbox" id="inSnap"></label>
 
       <div class="sec">Palette</div>
       <div class="row nb"><span class="lbl">Preset</span>
@@ -259,14 +264,14 @@ const DEFAULT_ALPHA = { alphaMode: 'preserve', alphaThreshold: 128, bgTolerance:
 const state = {
   theme: 'dark', accent: null,
   fileName: '', srcW: 0, srcH: 0, autoPixelSize: null, hasImage: false,
-  sizeMode: 'size', size: 64, pixelSize: 6, snapGrid: true,
-  colors: 16, palette: 'adaptive', customHex: '', autoColors: false,
+  sizeMode: 'auto', size: 64, pixelSize: 6, snapGrid: true,
+  colors: 16, palette: 'adaptive', customHex: '', autoColors: true,
   highlightCollapse: 0.03, shadowCollapse: 0.16,
   cell: 'detail', dominantThreshold: 0.25, dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   alphaMode: 'preserve', bgTolerance: 0.10, keyColor: '#00ff00',
   cleanup: 'none', protectDetails: true, outline: 'none',
   quantizer: 'kmeans', paletteMerge: 0, contrastExpansion: 0,
-  scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, showOriginal: false, showGrid: false,
+  scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, viewMode: 'result', compareSplit: 50, showGrid: false,
   outW: 0, outH: 0, paletteLen: 0, gridPhase: '', phaseConf: '', autoColorsChosen: null, cleanupRemoved: 0, rendering: false,
   swatches: [], customError: '',
 };
@@ -288,7 +293,7 @@ function segActive(container, active) {
   container._btns.forEach(b => b.classList.toggle('on', b.dataset.value === String(active)));
 }
 
-buildSeg($('sizeModeGrp'), [['size','Fixed'],['pixel','Pixel'],['auto','Auto']], 'seg-join', v => set({ sizeMode: v }));
+buildSeg($('sizeModeGrp'), [['auto','Auto'],['pixel','Pixel'],['size','Fixed']], 'seg-join', v => set({ sizeMode: v }));
 buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant']], 'seg-join', v => set({ cell: v }));
 buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
 buildSeg($('alphaModeGrp'), [['preserve','Keep'],['binary','Binary'],['bgfill','BG Fill'],['key','Key']], 'seg-join', v => set({ alphaMode: v }));
@@ -297,7 +302,7 @@ buildSeg($('outlineGrp'), [['none','Off'],['repair','Repair'],['enforce','Enforc
 buildSeg($('quantGrp'), [['kmeans','K-Means'],['wu','Wu']], 'seg', v => set({ quantizer: v }));
 buildSeg($('guardGrp'), [[0,'Off'],[1,'1px'],[2,'2px']], 'seg', v => set({ contrastExpansion: v }));
 buildSeg($('themeGrp'), [['light','Light'],['dark','Dark']], 'seg', v => { state.theme = v; savePrefs(); applyTheme(); });
-buildSeg($('baGrp'), [['result','Result'],['original','Original']], 'seg', v => { state.showOriginal = (v === 'original'); updatePreviewImg(); render(); });
+buildSeg($('baGrp'), [['result','Result'],['original','Original'],['compare','Compare']], 'seg', v => { state.viewMode = v; updatePreviewImg(); render(); });
 buildSeg($('zoomGrp'), ZOOMS.map(v => [v, v + '×']), 'seg', v => setZoom(v));
 buildSeg($('colorPresets'), [['auto','Auto'],[8,'8'],[16,'16'],[32,'32'],[64,'64'],[128,'128'],[256,'256'],[512,'512']], 'seg',
   v => v === 'auto' ? set({ autoColors: true }) : set({ autoColors: false, colors: v }));
@@ -338,16 +343,32 @@ function set(patch, preview = true) {
 
 // drag & drop
 const stage = $('stage');
-['dragover','dragenter'].forEach(ev => stage.addEventListener(ev, e => { e.preventDefault(); }));
-stage.addEventListener('drop', e => {
+function imageFileFromDrop(e) {
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
+  return files.find(f => /^image\//.test(f.type) || /\.(png|jpe?g|webp)$/i.test(f.name));
+}
+function handleDragFiles(e) {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+  const f = imageFileFromDrop(e);
+  if (!f && e.type === 'drop') return;
   e.preventDefault();
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) loadFile(f);
-});
+  e.stopPropagation();
+  if (e.type === 'dragover' || e.type === 'dragenter') e.dataTransfer.dropEffect = 'copy';
+  if (f && e.type === 'drop') loadFile(f);
+}
+['dragover','dragenter','drop'].forEach(ev => document.addEventListener(ev, handleDragFiles, true));
 $('preview').addEventListener('dragstart', e => e.preventDefault());
+$('comparePreview').addEventListener('dragstart', e => e.preventDefault());
 
-let panDrag = null;
+let panDrag = null, compareDrag = null;
 stage.addEventListener('pointerdown', e => {
+  if (state.hasImage && state.viewMode === 'compare' && e.target === $('compareDivider')) {
+    e.preventDefault();
+    compareDrag = e.pointerId;
+    stage.setPointerCapture(e.pointerId);
+    setCompareSplitFromPointer(e);
+    return;
+  }
   if (!state.hasImage || e.button !== 0 || e.target.closest('.overlay')) return;
   e.preventDefault();
   panDrag = {
@@ -361,6 +382,10 @@ stage.addEventListener('pointerdown', e => {
   stage.classList.add('dragging');
 });
 stage.addEventListener('pointermove', e => {
+  if (compareDrag === e.pointerId) {
+    setCompareSplitFromPointer(e);
+    return;
+  }
   if (!panDrag || e.pointerId !== panDrag.id) return;
   state.panX = panDrag.panX + e.clientX - panDrag.x;
   state.panY = panDrag.panY + e.clientY - panDrag.y;
@@ -368,6 +393,11 @@ stage.addEventListener('pointermove', e => {
   applyPreviewTransform();
 });
 function stopPan(e) {
+  if (compareDrag === e.pointerId) {
+    compareDrag = null;
+    try { stage.releasePointerCapture(e.pointerId); } catch (err) {}
+    return;
+  }
   if (!panDrag || e.pointerId !== panDrag.id) return;
   panDrag = null;
   stage.classList.remove('dragging');
@@ -456,7 +486,30 @@ function clampPan() {
 function applyPreviewTransform() {
   const t = `translate(calc(-50% + ${state.panX}px), calc(-50% + ${state.panY}px))`;
   $('preview').style.transform = t;
+  $('comparePreview').style.transform = t;
   $('gridOverlay').style.transform = t;
+  updateCompareDivider();
+}
+function setCompareSplitFromPointer(e) {
+  const rect = stage.getBoundingClientRect();
+  const d = displayDims();
+  const left = rect.left + rect.width * 0.5 + state.panX - d.w * 0.5;
+  state.compareSplit = clamp(((e.clientX - left) / d.w) * 100, 0, 100);
+  updateCompareDivider();
+}
+function updateCompareDivider() {
+  const divider = $('compareDivider');
+  if (!state.hasImage || state.viewMode !== 'compare') {
+    divider.style.display = 'none';
+    return;
+  }
+  const d = displayDims();
+  const offset = (state.compareSplit / 100 - 0.5) * d.w;
+  $('comparePreview').style.clipPath = `inset(0 ${100 - state.compareSplit}% 0 0)`;
+  divider.style.display = 'block';
+  divider.style.left = `calc(50% + ${state.panX + offset}px)`;
+  divider.style.height = d.h + 'px';
+  divider.style.transform = `translateY(calc(-50% + ${state.panY}px))`;
 }
 function setZoom(next, anchor) {
   next = ZOOMS.includes(next) ? next : ZOOMS[0];
@@ -476,14 +529,20 @@ function setZoom(next, anchor) {
 }
 function updatePreviewImg() {
   const img = $('preview');
+  const cmp = $('comparePreview');
   const d = displayDims();
-  img.style.width = d.w + 'px';
-  img.style.height = d.h + 'px';
-  if (state.showOriginal) { img.src = originalURL || ''; img.style.imageRendering = 'auto'; }
+  [img, cmp].forEach(el => {
+    el.style.width = d.w + 'px';
+    el.style.height = d.h + 'px';
+  });
+  if (state.viewMode === 'original') { img.src = originalURL || ''; img.style.imageRendering = 'auto'; }
   else { img.src = previewURL || ''; img.style.imageRendering = 'pixelated'; }
   img.style.display = state.hasImage ? 'block' : 'none';
+  cmp.src = originalURL || '';
+  cmp.style.display = state.hasImage && state.viewMode === 'compare' ? 'block' : 'none';
+  cmp.style.clipPath = `inset(0 ${100 - state.compareSplit}% 0 0)`;
   const grid = $('gridOverlay');
-  const gridOn = state.showGrid && state.hasImage && !state.showOriginal && state.zoom >= 4;
+  const gridOn = state.showGrid && state.hasImage && state.viewMode === 'result' && state.zoom >= 4;
   grid.style.display = gridOn ? 'block' : 'none';
   if (gridOn) {
     grid.style.width = d.w + 'px';
@@ -561,7 +620,7 @@ async function loadFile(file) {
   if (!file) return;
   cancelPreview();
   state.fileName = file.name;
-  state.hasImage = false; state.showOriginal = false; state.outW = 0; state.outH = 0;
+  state.hasImage = false; state.viewMode = 'result'; state.outW = 0; state.outH = 0;
   state.paletteLen = 0; state.gridPhase = ''; state.cleanupRemoved = 0; state.swatches = []; state.customError = '';
   resetPan();
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
@@ -575,7 +634,7 @@ async function loadFile(file) {
     const meta = await res.json();
     state.srcW = meta.srcWidth; state.srcH = meta.srcHeight;
     state.autoPixelSize = (meta.autoPixelSize == null) ? null : meta.autoPixelSize;
-    state.hasImage = true; state.showOriginal = false; state.outW = 0; state.outH = 0;
+    state.hasImage = true; state.viewMode = 'result'; state.outW = 0; state.outH = 0;
     render(); updatePreviewImg(); schedulePreview();
   } catch (e) { showToast(String(e), true); }
 }
@@ -654,7 +713,7 @@ function render() {
   segActive($('quantGrp'), s.quantizer);
   segActive($('guardGrp'), s.contrastExpansion);
   segActive($('themeGrp'), s.theme);
-  segActive($('baGrp'), s.showOriginal ? 'original' : 'result');
+  segActive($('baGrp'), s.viewMode);
   segActive($('zoomGrp'), s.zoom);
   segActive($('colorPresets'), s.autoColors ? 'auto' : s.colors);
   $('gridBtn').classList.toggle('on', s.showGrid);
@@ -686,8 +745,10 @@ function render() {
   $('compareBtn').textContent = 'Compare ' + (s.compare ? 'On' : 'Off');
   $('compareBtn').classList.toggle('on', s.compare);
 
-  $('rowSize').classList.toggle('dim', s.sizeMode !== 'size');
-  $('rowPixel').classList.toggle('dim', s.sizeMode !== 'pixel');
+  $('rowSize').style.display = s.sizeMode === 'size' ? 'flex' : 'none';
+  $('rowPixel').style.display = s.sizeMode === 'pixel' ? 'flex' : 'none';
+  $('rowSnap').style.display = 'flex';
+  $('rowSnap').classList.toggle('dim', s.sizeMode === 'size');
   $('colorsBlock').classList.toggle('dim', s.palette !== 'adaptive');
   $('inColors').classList.toggle('dim', s.autoColors);
   $('cleanupBlock').classList.toggle('dim', s.palette !== 'adaptive');

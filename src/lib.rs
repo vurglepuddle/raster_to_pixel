@@ -10,6 +10,7 @@ pub mod color;
 pub mod dither;
 pub mod downsample;
 pub mod enhance;
+pub mod image_io;
 pub mod kmeans;
 pub mod morphology;
 pub mod outline;

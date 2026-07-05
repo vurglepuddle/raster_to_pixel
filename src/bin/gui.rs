@@ -22,6 +22,7 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use raster_to_pixel::{
     alpha::AlphaMode,
     downsample::CellMode,
+    image_io,
     morphology::CleanupPreset,
     outline::OutlineMode,
     palettes,
@@ -203,9 +204,9 @@ fn route(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
 }
 
 fn handle_session(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
-    let img = match image::load_from_memory(&req.body) {
-        Ok(img) => img.to_rgba8(),
-        Err(e) => return send_error(stream, "400 Bad Request", &format!("decode failed: {e}")),
+    let img = match image_io::load_rgba_from_memory(&req.body) {
+        Ok(img) => img,
+        Err(e) => return send_error(stream, "400 Bad Request", &e),
     };
     let (w, h) = img.dimensions();
     let detected = pipeline::detect_pixel_size_of(&img);
