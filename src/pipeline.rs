@@ -649,9 +649,10 @@ pub(crate) fn target_size_from_pixel_size(src_w: u32, src_h: u32, pixel_size: f6
 
 pub(crate) fn detect_pixel_size(src: &RgbaImage) -> Option<f64> {
     if let Some(pixel_size) = detect_pixel_size_from_runs(src) {
-        if run_candidate_has_cell_coherence(src, pixel_size) {
-            return Some(pixel_size);
+        if (pixel_size - 5.0).abs() <= 0.2 && looks_like_two_pixel_downscale(src) {
+            return Some(2.0);
         }
+        return Some(pixel_size);
     }
 
     let (cols, rows) = edge_profiles(src);
@@ -767,7 +768,14 @@ fn best_phase_for_step(profile: &[f64], step: usize) -> Option<PhaseScore> {
 const MAX_AUTO_PIXEL_SIZE: f64 = 32.0;
 const MIN_AUTO_PIXEL_SIZE: usize = 3;
 const MIN_EDGE_AUTO_PHASE_CONFIDENCE: f32 = 0.08;
-const MIN_RUN_CELL_COHERENCE_P25: f32 = 0.55;
+const MIN_LOW_SCALE_RUN_CELL_COHERENCE_P25: f32 = 0.55;
+const MIN_RUN_CELL_COHERENCE_MEDIAN: f32 = 0.51;
+const MIN_RUN_SCORE_CONFIDENCE: f64 = 0.7;
+const RUN_RETRY_MIN_SCORE_RATIO: f64 = 0.65;
+const RUN_RETRY_MIN_SHORT_SIDE: u32 = 384;
+const TWO_PIXEL_DOWNSCALE_MIN_SHORT_SIDE: u32 = 768;
+const TWO_PIXEL_DOWNSCALE_MIN_WEIGHT_SHARE: f64 = 0.11;
+const TWO_PIXEL_DOWNSCALE_MIN_COUNT_RATIO: f64 = 1.08;
 
 fn detect_pixel_size_from_runs(src: &RgbaImage) -> Option<f64> {
     let max = MAX_AUTO_PIXEL_SIZE as usize;
@@ -809,8 +817,7 @@ fn detect_pixel_size_from_runs(src: &RgbaImage) -> Option<f64> {
         return None;
     }
 
-    let mut best = None;
-    let mut best_score = 0.0;
+    let mut candidates = Vec::new();
     for candidate in MIN_AUTO_PIXEL_SIZE..=max {
         let mut score = 0.0;
         for &len in &run_lengths {
@@ -824,19 +831,37 @@ fn detect_pixel_size_from_runs(src: &RgbaImage) -> Option<f64> {
             }
         }
         score *= (candidate as f64).sqrt();
-        if score > best_score {
-            best_score = score;
-            best = Some(candidate as f64);
-        }
+        candidates.push((candidate, score));
     }
 
     let total: usize = run_lengths.iter().sum();
-    let confidence = best_score / total.max(1) as f64;
-    if confidence >= 0.7 {
-        best
-    } else {
-        None
+    let min_score = total.max(1) as f64 * MIN_RUN_SCORE_CONFIDENCE;
+    candidates.retain(|&(_, score)| score >= min_score);
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let best_score = candidates.first().map(|&(_, score)| score)?;
+    let best_candidate = candidates[0];
+    let mut retry_candidates = candidates[1..].to_vec();
+    retry_candidates.sort_by_key(|&(candidate, _)| candidate);
+
+    for (index, (candidate, score)) in std::iter::once(best_candidate)
+        .chain(retry_candidates.into_iter())
+        .enumerate()
+    {
+        if index > 0 {
+            let source_is_large = src.width().min(src.height()) >= RUN_RETRY_MIN_SHORT_SIDE;
+            let runner_up_is_plausible =
+                candidate >= 5 && score >= best_score * RUN_RETRY_MIN_SCORE_RATIO;
+            if !source_is_large || !runner_up_is_plausible {
+                continue;
+            }
+        }
+        let pixel_size = candidate as f64;
+        if run_candidate_has_cell_coherence(src, pixel_size) {
+            return Some(pixel_size);
+        }
     }
+
+    None
 }
 
 fn coarse_key(px: &Rgba<u8>) -> u16 {
@@ -852,6 +877,71 @@ fn coarse_key(px: &Rgba<u8>) -> u16 {
 fn push_run_length(run_lengths: &mut Vec<usize>, len: usize, max: usize) {
     if (MIN_AUTO_PIXEL_SIZE..=max).contains(&len) {
         run_lengths.push(len);
+    }
+}
+
+fn looks_like_two_pixel_downscale(src: &RgbaImage) -> bool {
+    if src.width().min(src.height()) < TWO_PIXEL_DOWNSCALE_MIN_SHORT_SIDE {
+        return false;
+    }
+
+    let mut counts = [0usize; 6];
+    let mut total_weight = 0usize;
+    let max = MAX_AUTO_PIXEL_SIZE as usize;
+
+    for y in 0..src.height() {
+        let mut current = coarse_key(src.get_pixel(0, y));
+        let mut len = 1usize;
+        for x in 1..src.width() {
+            let key = coarse_key(src.get_pixel(x, y));
+            if key == current {
+                len += 1;
+            } else {
+                count_short_run(&mut counts, &mut total_weight, len, max);
+                current = key;
+                len = 1;
+            }
+        }
+        count_short_run(&mut counts, &mut total_weight, len, max);
+    }
+
+    for x in 0..src.width() {
+        let mut current = coarse_key(src.get_pixel(x, 0));
+        let mut len = 1usize;
+        for y in 1..src.height() {
+            let key = coarse_key(src.get_pixel(x, y));
+            if key == current {
+                len += 1;
+            } else {
+                count_short_run(&mut counts, &mut total_weight, len, max);
+                current = key;
+                len = 1;
+            }
+        }
+        count_short_run(&mut counts, &mut total_weight, len, max);
+    }
+
+    if total_weight == 0 {
+        return false;
+    }
+
+    let short_neighbors = counts[3] + counts[4] + counts[5];
+    if short_neighbors == 0 {
+        return false;
+    }
+    let two_weight_share = (counts[2] * 2) as f64 / total_weight as f64;
+    let two_count_ratio = counts[2] as f64 / short_neighbors as f64;
+    two_weight_share >= TWO_PIXEL_DOWNSCALE_MIN_WEIGHT_SHARE
+        && two_count_ratio >= TWO_PIXEL_DOWNSCALE_MIN_COUNT_RATIO
+}
+
+fn count_short_run(counts: &mut [usize; 6], total_weight: &mut usize, len: usize, max: usize) {
+    if len == 0 || len > max {
+        return;
+    }
+    *total_weight += len;
+    if len < counts.len() {
+        counts[len] += 1;
     }
 }
 
@@ -901,7 +991,11 @@ fn run_candidate_has_cell_coherence(src: &RgbaImage, pixel_size: f64) -> bool {
     }
     dominant_counts.sort_unstable();
     let p25 = dominant_counts[dominant_counts.len() / 4] as f32 / area as f32;
-    p25 >= MIN_RUN_CELL_COHERENCE_P25
+    let median = dominant_counts[dominant_counts.len() / 2] as f32 / area as f32;
+    if step <= 4 {
+        return p25 >= MIN_LOW_SCALE_RUN_CELL_COHERENCE_P25;
+    }
+    median >= MIN_RUN_CELL_COHERENCE_MEDIAN
 }
 
 fn edge_profiles(src: &RgbaImage) -> (Vec<f64>, Vec<f64>) {
@@ -1318,6 +1412,7 @@ mod tests {
     fn run_candidate_coherence_rejects_mixed_cells() {
         let mut mixed = RgbaImage::new(32, 32);
         let mut coherent = RgbaImage::new(32, 32);
+        let mut fuzzy_majority = RgbaImage::new(40, 40);
         for y in 0..mixed.height() {
             for x in 0..mixed.width() {
                 let mixed_color = if (x + y) % 2 == 0 {
@@ -1335,8 +1430,111 @@ mod tests {
                 coherent.put_pixel(x, y, coherent_color);
             }
         }
+        for y in 0..fuzzy_majority.height() {
+            for x in 0..fuzzy_majority.width() {
+                let cell_dark = ((x / 5) + (y / 5)) % 2 == 0;
+                let base = if cell_dark {
+                    Rgba([40, 70, 120, 255])
+                } else {
+                    Rgba([210, 190, 90, 255])
+                };
+                let stray = if cell_dark {
+                    Rgba([90, 120, 170, 255])
+                } else {
+                    Rgba([160, 130, 40, 255])
+                };
+                let in_cell = (y % 5) * 5 + (x % 5);
+                fuzzy_majority.put_pixel(x, y, if in_cell < 13 { base } else { stray });
+            }
+        }
         assert!(!run_candidate_has_cell_coherence(&mixed, 4.0));
         assert!(run_candidate_has_cell_coherence(&coherent, 4.0));
+        assert!(run_candidate_has_cell_coherence(&fuzzy_majority, 5.0));
+    }
+
+    #[test]
+    fn auto_pixel_size_retries_strong_coherent_runner_up() {
+        let mut img = RgbaImage::new(600, 600);
+        for y in 0..img.height() {
+            for x in 0..img.width() {
+                let cell_dark = ((x / 5) + (y / 5)) % 2 == 0;
+                let base = if cell_dark {
+                    Rgba([40, 70, 120, 255])
+                } else {
+                    Rgba([210, 190, 90, 255])
+                };
+                let stray = if cell_dark {
+                    Rgba([90, 120, 170, 255])
+                } else {
+                    Rgba([160, 130, 40, 255])
+                };
+                let wide_stray_band = x < 450;
+                let in_cell_x = x % 5;
+                let use_base = if wide_stray_band {
+                    in_cell_x < 3
+                } else {
+                    in_cell_x < 4
+                };
+                img.put_pixel(x, y, if use_base { base } else { stray });
+            }
+        }
+
+        assert!(!run_candidate_has_cell_coherence(&img, 4.0));
+        assert!(run_candidate_has_cell_coherence(&img, 5.0));
+        assert_eq!(detect_pixel_size(&img), Some(5.0));
+    }
+
+    #[test]
+    fn local_example_auto_pixel_sizes_match_file_names() {
+        use std::path::Path;
+
+        let examples = Path::new("examples");
+        if !examples.exists() {
+            return;
+        }
+
+        let mut checked = 0usize;
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(examples).expect("read examples dir") {
+            let entry = entry.expect("read example entry");
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !["png", "jpg", "jpeg", "webp"].contains(&ext.to_ascii_lowercase().as_str()) {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let expected = stem
+                .strip_suffix("_fail")
+                .unwrap_or(stem)
+                .rsplit('_')
+                .find_map(|part| part.parse::<u32>().ok());
+            let Some(expected) = expected else {
+                continue;
+            };
+
+            let img = crate::image_io::load_rgba_from_path(&path)
+                .unwrap_or_else(|err| panic!("open {}: {err}", path.display()));
+            let detected = detect_pixel_size(&img).unwrap_or(1.0).round().max(1.0) as u32;
+            checked += 1;
+            if detected != expected {
+                failures.push(format!(
+                    "{} expected {expected}, got {detected}",
+                    path.display()
+                ));
+            }
+        }
+
+        if checked == 0 {
+            return;
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
