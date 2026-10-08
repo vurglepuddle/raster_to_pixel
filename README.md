@@ -10,6 +10,14 @@ Licensed under MIT. See `LICENSE` and `NOTICE`.
 cargo run --bin gui -- --chrome
 ```
 
+Use **Crop** in the top bar to select part of the original image. Drag a rectangle,
+move it, resize its handles, or enter exact X/Y/Width/Height values in source pixels.
+Scroll to zoom and Shift-drag to pan. **Apply crop** updates the result;
+**Cancel** (or Escape) discards the selection, and **Reset crop** restores the full image.
+The original file stays intact. Preview, PNG export, palette export, and comparison
+all use the selected region. Cropping happens before grid detection and conversion,
+so a smaller region reduces processing work; the full file is still decoded on load.
+
 ![Pixeline GUI in dark mode](screenshots/dark_mode.png)
 
 ![Pixeline GUI in light mode](screenshots/light_mode.png)
@@ -32,6 +40,16 @@ Use the GUI when you want to compare modes visually. Use the CLI for repeatable
 settings, batch conversion, palette export, and debug sidecars.
 
 ## Useful Options
+
+Crop before processing (coordinates are measured from the original top-left corner):
+
+```cmd
+--crop 100,50,320,240   Process a 320x240 region starting at x=100, y=50.
+```
+
+The rectangle must fit inside the source. In batch mode, the same crop applies to
+each image. Comparison and debug grid exports show the cropped region; debug JSON
+records the crop and reports its dimensions as `srcWidth`/`srcHeight`.
 
 Pick the output grid:
 

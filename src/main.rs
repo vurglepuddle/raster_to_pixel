@@ -14,7 +14,7 @@ use raster_to_pixel::{
     outline::OutlineMode,
     palettes,
     pipeline::{
-        self, Config, Dither, PaletteChoice, Quantizer, DEFAULT_BG_TOLERANCE,
+        self, Config, CropRect, Dither, PaletteChoice, Quantizer, DEFAULT_BG_TOLERANCE,
         DEFAULT_HIGHLIGHT_COLLAPSE, DEFAULT_SHADOW_COLLAPSE,
     },
 };
@@ -30,6 +30,10 @@ struct Args {
 
     /// Output image path, or output directory when input is a directory.
     output: PathBuf,
+
+    /// Process only this source rectangle: x,y,width,height (whole source pixels).
+    #[arg(long, value_name = "X,Y,WIDTH,HEIGHT")]
+    crop: Option<CropRect>,
 
     /// Long side of the pixel-art result.
     #[arg(long, default_value_t = 64)]
@@ -284,9 +288,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let src = image_io::load_rgba_from_path(&args.input)?;
-    let (src_w, src_h) = src.dimensions();
-
     let result = pipeline::convert(&src, &cfg)?;
+    let (src_w, src_h) = (result.src_w, result.src_h);
 
     if let Some(pixel_size) = result.detected_pixel_size {
         eprintln!("auto pixel size: {:.2} source px", pixel_size);
@@ -588,6 +591,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
     let color_key = args.color_key.as_deref().map(parse_hex_color).transpose()?;
 
     Ok(Config {
+        crop: args.crop,
         size: args.size,
         pixel_size: args.pixel_size,
         auto_pixel_size: args.auto_pixel_size,

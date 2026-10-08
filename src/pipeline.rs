@@ -8,6 +8,8 @@
 //! directly — it does NOT touch the filesystem, though, so callers resolve palette
 //! files/text themselves and hand in a `PaletteChoice`.
 
+use std::borrow::Cow;
+
 use image::{imageops::FilterType, Rgba, RgbaImage};
 
 use crate::{
@@ -62,9 +64,44 @@ pub enum PaletteChoice {
     HexList(String),
 }
 
+/// A source-pixel rectangle, measured from the original image's top-left corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CropRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl std::str::FromStr for CropRect {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let values: Vec<u32> = text
+            .split(',')
+            .map(|s| s.trim().parse::<u32>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| "crop must be x,y,width,height in whole source pixels")?;
+        let [x, y, width, height] = values.as_slice() else {
+            return Err("crop must be x,y,width,height in whole source pixels".into());
+        };
+        if *width == 0 || *height == 0 {
+            return Err("crop width and height must be at least 1".into());
+        }
+        Ok(Self {
+            x: *x,
+            y: *y,
+            width: *width,
+            height: *height,
+        })
+    }
+}
+
 /// Everything the pipeline needs. Defaults match the CLI's flag defaults.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// Crop the source before all detection and conversion stages. None uses the full image.
+    pub crop: Option<CropRect>,
     /// Long side of the pixel-art grid (used unless `pixel_size`/`auto_pixel_size`).
     pub size: u32,
     /// Estimated source pixels per output pixel. Overrides `size` when set.
@@ -126,6 +163,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            crop: None,
             size: 64,
             pixel_size: None,
             auto_pixel_size: false,
@@ -161,6 +199,9 @@ impl Default for Config {
 impl Config {
     /// Front-end-agnostic validation (clap already enforces the CLI's own messages).
     pub fn validate(&self) -> Result<(), String> {
+        if self.crop.is_some_and(|c| c.width == 0 || c.height == 0) {
+            return Err("crop width and height must be at least 1".into());
+        }
         if self.size == 0 {
             return Err("size must be at least 1".into());
         }
@@ -215,6 +256,7 @@ pub struct ConvertResult {
     /// The actual sRGB palette used, luma-sorted (empty if the source is fully transparent).
     pub palette: Vec<[u8; 3]>,
     pub palette_len: usize,
+    /// Dimensions of the processed source region (after cropping).
     pub src_w: u32,
     pub src_h: u32,
     pub out_w: u32,
@@ -259,6 +301,7 @@ impl ConvertResult {
             concat!(
                 "{{\n",
                 "  \"srcWidth\": {}, \"srcHeight\": {},\n",
+                "  \"crop\": {},\n",
                 "  \"outWidth\": {}, \"outHeight\": {},\n",
                 "  \"requestedPixelSize\": {}, \"detectedPixelSize\": {},\n",
                 "  \"snapGrid\": {}, \"gridPhaseX\": {}, \"gridPhaseY\": {}, \"phaseConfidence\": {},\n",
@@ -274,6 +317,10 @@ impl ConvertResult {
             ),
             self.src_w,
             self.src_h,
+            cfg.crop.map_or("null".into(), |c| format!(
+                "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                c.x, c.y, c.width, c.height
+            )),
             self.out_w,
             self.out_h,
             opt_f64(cfg.pixel_size),
@@ -316,6 +363,8 @@ pub fn detect_pixel_size_of(src: &RgbaImage) -> Option<f64> {
 /// Run the full pipeline: source RGBA → deliberate pixel-art RGBA.
 pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
     cfg.validate()?;
+    let region = source_region(src, cfg.crop)?;
+    let src = region.as_ref();
     let (src_w, src_h) = src.dimensions();
 
     // Alpha pre-pass (binary / background fill / color key) runs BEFORE grid
@@ -466,6 +515,8 @@ fn auto_color_count(linear_rgba: &[f32], alpha_threshold: f32) -> usize {
 /// pixel size or phase is visible at a glance.
 pub fn debug_grid_image(src: &RgbaImage, cfg: &Config) -> Result<RgbaImage, String> {
     cfg.validate()?;
+    let region = source_region(src, cfg.crop)?;
+    let src = region.as_ref();
     let mut work_owned;
     let work: &RgbaImage = if cfg.alpha_mode != AlphaMode::Preserve {
         work_owned = src.clone();
@@ -508,6 +559,32 @@ pub fn debug_grid_image(src: &RgbaImage, cfg: &Config) -> Result<RgbaImage, Stri
         }
     }
     Ok(out)
+}
+
+/// Copy only the selected pixels; an uncropped source stays borrowed.
+fn source_region(src: &RgbaImage, crop: Option<CropRect>) -> Result<Cow<'_, RgbaImage>, String> {
+    let Some(c) = crop else {
+        return Ok(Cow::Borrowed(src));
+    };
+    if c.width == 0
+        || c.height == 0
+        || c.x >= src.width()
+        || c.y >= src.height()
+        || c.width > src.width() - c.x
+        || c.height > src.height() - c.y
+    {
+        return Err(format!(
+            "crop must fit inside the {}x{} source image",
+            src.width(),
+            src.height()
+        ));
+    }
+    if c.x == 0 && c.y == 0 && c.width == src.width() && c.height == src.height() {
+        return Ok(Cow::Borrowed(src));
+    }
+    Ok(Cow::Owned(
+        image::imageops::crop_imm(src, c.x, c.y, c.width, c.height).to_image(),
+    ))
 }
 
 /// Resolve a palette choice into Oklab entries, or `None` for adaptive.
@@ -1355,6 +1432,224 @@ mod tests {
         PaletteCleanup {
             highlight: DEFAULT_HIGHLIGHT_COLLAPSE,
             shadow: DEFAULT_SHADOW_COLLAPSE,
+        }
+    }
+
+    #[test]
+    fn crop_excludes_surrounding_colors_and_uses_region_dimensions() {
+        let mut src = RgbaImage::from_pixel(16, 12, Rgba([0, 0, 255, 255]));
+        for y in 3..7 {
+            for x in 5..11 {
+                src.put_pixel(x, y, Rgba([255, 0, 0, 255]));
+            }
+        }
+        let result = convert(
+            &src,
+            &Config {
+                crop: Some(CropRect {
+                    x: 5,
+                    y: 3,
+                    width: 6,
+                    height: 4,
+                }),
+                size: 6,
+                ..cfg()
+            },
+        )
+        .unwrap();
+        assert_eq!((result.src_w, result.src_h), (6, 4));
+        assert_eq!(result.image.dimensions(), (6, 4));
+        assert_eq!(result.palette, vec![[255, 0, 0]]);
+        assert!(result.image.pixels().all(|p| p.0 == [255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn crop_precedes_detection_alpha_cleanup_compare_and_debug_grid() {
+        let mut src = RgbaImage::from_pixel(80, 70, Rgba([255, 255, 255, 255]));
+        let rect = CropRect {
+            x: 13,
+            y: 17,
+            width: 40,
+            height: 30,
+        };
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                let color = if (x / 5 + y / 5) % 2 == 0 {
+                    [200, 50, 40, 255]
+                } else {
+                    [30, 40, 100, 255]
+                };
+                src.put_pixel(rect.x + x, rect.y + y, Rgba(color));
+            }
+        }
+        let manual =
+            image::imageops::crop_imm(&src, rect.x, rect.y, rect.width, rect.height).to_image();
+        for alpha_mode in [AlphaMode::Preserve, AlphaMode::BackgroundFill] {
+            let config = Config {
+                crop: Some(rect),
+                auto_pixel_size: true,
+                auto_colors: true,
+                alpha_mode,
+                contrast_expansion: 1,
+                cleanup: CleanupPreset::Balanced,
+                compare: true,
+                scale: 2,
+                ..cfg()
+            };
+            let plain_config = Config {
+                crop: None,
+                ..config.clone()
+            };
+            let actual = convert(&src, &config).unwrap();
+            let expected = convert(&manual, &plain_config).unwrap();
+            assert_eq!(actual.image, expected.image);
+            assert_eq!(actual.palette, expected.palette);
+            assert_eq!(actual.detected_pixel_size, expected.detected_pixel_size);
+            assert_eq!(actual.grid_phase, expected.grid_phase);
+            assert_eq!(actual.alpha_removed, expected.alpha_removed);
+            assert_eq!(
+                debug_grid_image(&src, &config).unwrap(),
+                debug_grid_image(&manual, &plain_config).unwrap()
+            );
+            assert!(actual
+                .diagnostics_json(&config)
+                .contains("\"crop\": {\"x\":13,\"y\":17,\"width\":40,\"height\":30}"));
+        }
+    }
+
+    #[test]
+    fn crop_rejects_empty_out_of_bounds_and_overflowing_rectangles() {
+        let src = RgbaImage::new(8, 6);
+        for rect in [
+            CropRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 1,
+            },
+            CropRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 0,
+            },
+            CropRect {
+                x: 8,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            CropRect {
+                x: 0,
+                y: 6,
+                width: 1,
+                height: 1,
+            },
+            CropRect {
+                x: 7,
+                y: 5,
+                width: 2,
+                height: 1,
+            },
+            CropRect {
+                x: 7,
+                y: 5,
+                width: 1,
+                height: 2,
+            },
+            CropRect {
+                x: u32::MAX,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+            CropRect {
+                x: 1,
+                y: 1,
+                width: u32::MAX,
+                height: u32::MAX,
+            },
+        ] {
+            let config = Config {
+                crop: Some(rect),
+                ..cfg()
+            };
+            assert!(convert(&src, &config).is_err(), "{rect:?}");
+            assert!(debug_grid_image(&src, &config).is_err(), "{rect:?}");
+        }
+    }
+
+    #[test]
+    fn full_image_crop_matches_uncropped_and_keeps_source_borrowed() {
+        let src = RgbaImage::from_pixel(8, 6, Rgba([50, 100, 150, 255]));
+        let rect = CropRect {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 6,
+        };
+        assert!(matches!(
+            source_region(&src, None).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            source_region(&src, Some(rect)).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            convert(&src, &cfg()).unwrap().image,
+            convert(
+                &src,
+                &Config {
+                    crop: Some(rect),
+                    ..cfg()
+                }
+            )
+            .unwrap()
+            .image
+        );
+        assert_eq!(
+            convert(
+                &src,
+                &Config {
+                    crop: Some(CropRect {
+                        x: 7,
+                        y: 5,
+                        width: 1,
+                        height: 1
+                    }),
+                    ..cfg()
+                }
+            )
+            .unwrap()
+            .image
+            .dimensions(),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn crop_text_requires_four_unsigned_integers_and_positive_dimensions() {
+        assert_eq!(
+            " 2, 3, 4, 5 ".parse::<CropRect>().unwrap(),
+            CropRect {
+                x: 2,
+                y: 3,
+                width: 4,
+                height: 5
+            }
+        );
+        for text in [
+            "",
+            "1,2,3",
+            "1,2,3,4,5",
+            "-1,0,4,4",
+            "0,0,1.5,2",
+            "0,0,0,2",
+            "0,0,2,0",
+            "0,0,4294967296,1",
+        ] {
+            assert!(text.parse::<CropRect>().is_err(), "{text}");
         }
     }
 

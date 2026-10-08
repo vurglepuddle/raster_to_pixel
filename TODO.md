@@ -10,6 +10,7 @@ Local planning notes. This file is intentionally ignored by git for now.
 - Grid phase snapping is implemented for explicit pixel-size and auto-pixel-size modes. It scores edge energy by phase, samples exact pixel-size cells from the detected phase, and can be disabled with `--no-snap-grid` / the GUI Snap grid checkbox.
 - Dominant/detail downsampling now has a dominance threshold. Weak winning buckets fall back to mean color; CLI and GUI expose the threshold.
 - GUI viewer has pinned overlays, drag-pan, wheel zoom, and a dense bottom palette strip showing up to 256 colors.
+- Crop (2026-10-08): GUI Crop/Edit crop with draw/move/resize, exact source-pixel bounds, zoom/pan, Apply/Cancel, and Reset crop; CLI `--crop x,y,width,height`. Shared `Config::crop` extracts only the region before detection, alpha cleanup, and conversion. Preview, PNG/palette export, compare, and debug grid use the crop; original files stay intact. Full Rust suite passed (103 tests), with browser interaction/export checks and dark/light visual inspection.
 - Adaptive palette building collapses very light, low-chroma generated white noise into one canonical white before k-means.
 - Adaptive palette building also collapses very dark generated noise into the darkest matching source color before k-means.
 - Palette cleanup thresholds are exposed through CLI flags and GUI sliders.

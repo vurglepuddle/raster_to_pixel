@@ -10,6 +10,7 @@
 //!   POST /api/preview    -> form-urlencoded settings; PNG of the raw grid (scale=1, no compare)
 //!   POST /api/export     -> form-urlencoded settings; PNG with real scale + compare (download)
 //!   POST /api/palette    -> form-urlencoded settings; resulting palette download
+//! Conversion settings accept optional `crop=x,y,width,height` in source pixels.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -242,7 +243,10 @@ fn handle_session(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> 
 
 fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::io::Result<()> {
     let form = parse_form(std::str::from_utf8(&req.body).unwrap_or(""));
-    let cfg = config_from_form(&form, preview);
+    let cfg = match config_from_form(&form, preview) {
+        Ok(cfg) => cfg,
+        Err(e) => return send_error(stream, "400 Bad Request", &e),
+    };
 
     let Some(src) = SESSION.lock().unwrap().clone() else {
         return send_error(
@@ -318,7 +322,10 @@ fn handle_convert(req: &Request, stream: &mut TcpStream, preview: bool) -> std::
 
 fn handle_palette(req: &Request, stream: &mut TcpStream) -> std::io::Result<()> {
     let form = parse_form(std::str::from_utf8(&req.body).unwrap_or(""));
-    let cfg = config_from_form(&form, true);
+    let cfg = match config_from_form(&form, true) {
+        Ok(cfg) => cfg,
+        Err(e) => return send_error(stream, "400 Bad Request", &e),
+    };
     let format = form
         .get("paletteFormat")
         .map(|s| s.to_ascii_lowercase())
@@ -394,7 +401,7 @@ fn palette_strip_image(palette: &[[u8; 3]]) -> RgbaImage {
     img
 }
 
-fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
+fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Result<Config, String> {
     let get = |k: &str| f.get(k).map(|s| s.as_str());
     let size_mode = get("sizeMode").unwrap_or("size");
     let (pixel_size, auto_pixel_size) = match size_mode {
@@ -442,7 +449,8 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         _ => OutlineMode::None,
     };
 
-    Config {
+    Ok(Config {
+        crop: get("crop").map(str::parse).transpose()?,
         size: parse_or::<u32>(get("size"), 64).max(1),
         pixel_size,
         auto_pixel_size,
@@ -485,7 +493,7 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Config {
         } else {
             matches!(get("compare"), Some("true" | "on" | "1"))
         },
-    }
+    })
 }
 
 fn parse_or<T: std::str::FromStr>(v: Option<&str>, default: T) -> T {
@@ -610,4 +618,32 @@ fn index_html() -> Cow<'static, str> {
         }
     }
     Cow::Borrowed(include_str!("../../gui/index.html"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crop_settings_apply_to_preview_export_and_palette() {
+        let form = parse_form("crop=2%2C3%2C4%2C5&scale=8&compare=true");
+        let preview = config_from_form(&form, true).unwrap();
+        let export = config_from_form(&form, false).unwrap();
+        assert_eq!(preview.crop, export.crop);
+        assert_eq!(preview.crop.unwrap().width, 4);
+        assert_eq!(preview.scale, 1);
+        assert!(!preview.compare);
+        assert_eq!(export.scale, 8);
+        assert!(export.compare);
+    }
+
+    #[test]
+    fn malformed_crop_is_an_error_instead_of_processing_the_full_source() {
+        assert!(config_from_form(&parse_form("crop=0,0,10"), true).is_err());
+        assert!(config_from_form(&parse_form("crop=0,0,0,10"), false).is_err());
+        assert!(config_from_form(&HashMap::new(), true)
+            .unwrap()
+            .crop
+            .is_none());
+    }
 }
