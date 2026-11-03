@@ -4,14 +4,23 @@
 
 #![allow(clippy::excessive_precision)]
 
-/// sRGB 8-bit channel -> linear [0,1].
+use std::sync::OnceLock;
+
+use crate::fmath;
+
+/// sRGB 8-bit channel -> linear [0,1]. Runs per source pixel, hence the table.
 pub fn srgb_to_linear(c: u8) -> f32 {
-    let c = c as f32 / 255.0;
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
+    static TABLE: OnceLock<[f32; 256]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        std::array::from_fn(|i| {
+            let c = i as f32 / 255.0;
+            if c <= 0.04045 {
+                c / 12.92
+            } else {
+                fmath::powf((c + 0.055) / 1.055, 2.4)
+            }
+        })
+    })[c as usize]
 }
 
 /// Linear [0,1] -> sRGB 8-bit channel (clamped).
@@ -20,7 +29,7 @@ pub fn linear_to_srgb(c: f32) -> u8 {
     let s = if c <= 0.0031308 {
         12.92 * c
     } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
+        1.055 * fmath::powf(c, 1.0 / 2.4) - 0.055
     };
     (s * 255.0 + 0.5) as u8
 }
@@ -30,9 +39,9 @@ pub fn linear_to_oklab(r: f32, g: f32, b: f32) -> [f32; 3] {
     let l = 0.412_221_47 * r + 0.536_332_54 * g + 0.051_445_995 * b;
     let m = 0.211_903_5 * r + 0.680_699_55 * g + 0.107_396_96 * b;
     let s = 0.088_302_46 * r + 0.281_718_84 * g + 0.629_978_7 * b;
-    let l_ = l.cbrt();
-    let m_ = m.cbrt();
-    let s_ = s.cbrt();
+    let l_ = fmath::cbrt(l);
+    let m_ = fmath::cbrt(m);
+    let s_ = fmath::cbrt(s);
     [
         0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_,
         1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_,

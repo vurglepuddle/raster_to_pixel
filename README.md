@@ -1,6 +1,16 @@
 # Raster to Pixel
 
-Rust CLI and local GUI for converting fuzzy raster images into deliberate pixel-art PNGs.
+Rust CLI, local GUI, and browser app for converting fuzzy raster images into deliberate
+pixel-art PNGs.
+
+**[Try it in your browser](https://vurglepuddle.github.io/raster_to_pixel/)**: nothing to
+install, and your images never leave your device. It runs the same Rust code, compiled to
+WebAssembly. See [web-wasm/README.md](web-wasm/README.md) for how it is built and how its
+output compares with the native app.
+
+Firefox with `privacy.resistFingerprinting` on works, but rare JPEGs with non-interleaved
+scans come out neon green. To fix that, add `vurglepuddle.github.io` to
+`privacy.resistFingerprinting.exemptedDomains`.
 
 Licensed under MIT. See `LICENSE` and `NOTICE`.
 

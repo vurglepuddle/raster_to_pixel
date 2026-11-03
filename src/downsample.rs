@@ -4,7 +4,10 @@
 //! edge map on source luma, and for cells straddling a strong edge, restrict
 //! the candidate set to pixels on the majority side before applying `mode`.
 
-use crate::color::{linear_to_oklab, oklab_dist2};
+use crate::{
+    color::{linear_to_oklab, oklab_dist2},
+    fmath,
+};
 
 /// How a cell's pixels collapse to one output pixel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -746,7 +749,7 @@ fn for_each_window_weight(
             if q >= ADAPTIVE_EXPONENT_CUTOFF || q.is_nan() {
                 continue;
             }
-            visit(i as u32, (-q).exp() * alpha);
+            visit(i as u32, fmath::exp(-q) * alpha);
         }
     }
 }
@@ -758,8 +761,8 @@ fn for_each_window_weight(
 /// reconstruction" is not a valid decomposition; this is.)
 fn clamp_sym2x2_eigenvalues(sigma: [f32; 3], lambda_min: f32, lambda_max: f32) -> [f32; 3] {
     let [a, b, d] = sigma;
-    let theta = 0.5 * (2.0 * b).atan2(a - d);
-    let (s, c) = theta.sin_cos();
+    let theta = 0.5 * fmath::atan2(2.0 * b, a - d);
+    let (s, c) = fmath::sin_cos(theta);
     let l1 = (c * c * a + 2.0 * c * s * b + s * s * d).clamp(lambda_min, lambda_max);
     let l2 = (s * s * a - 2.0 * c * s * b + c * c * d).clamp(lambda_min, lambda_max);
     [

@@ -8,3 +8,9 @@
 # Keep project notes/plans local, but allow the public README.
 *.md
 !README.md
+
+# Web (WASM) build outputs and locally pinned build tools.
+/dist/
+/web-wasm/target/
+/web-wasm/pkg/
+/web-wasm/.tools/

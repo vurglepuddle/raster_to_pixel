@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pixeline</title>
+<link rel="icon" href="data:,">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
 <style>
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;height:100%;}
@@ -319,8 +321,13 @@
   <input type="file" id="fileInput" accept="image/*" style="display:none;">
 </div>
 
+<!-- The browser build's backend. The native server serves this as an empty file. -->
+<script src="web_backend.js"></script>
 <script>
 "use strict";
+// Natively /api/* is the local Rust server. In the browser build, web_backend.js
+// provides the same contract using WebAssembly in a Worker.
+const api = window.pixelineApi || fetch.bind(window);
 const $ = (id) => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, isNaN(v) ? a : v));
 const ZOOMS = [1, 2, 4, 6, 8, 12, 16];
@@ -788,7 +795,7 @@ async function runPreview() {
   const controller = new AbortController();
   previewController = controller;
   try {
-    const res = await fetch('/api/preview', { method: 'POST', body: settingsParams(), signal: controller.signal });
+    const res = await api('/api/preview', { method: 'POST', body: settingsParams(), signal: controller.signal });
     if (seq !== previewSeq) return;
     if (!res.ok) {
       const msg = await res.json().then(j => j.error).catch(() => 'preview failed (' + res.status + ')');
@@ -834,8 +841,7 @@ async function loadFile(file) {
   originalURL = URL.createObjectURL(file);
   render(); updatePreviewImg();
   try {
-    const buf = await file.arrayBuffer();
-    const res = await fetch('/api/session', { method: 'POST', body: buf });
+    const res = await api('/api/session', { method: 'POST', body: file });
     if (!res.ok) { const j = await res.json().catch(() => ({})); showToast(j.error || 'load failed', true); return; }
     const meta = await res.json();
     state.srcW = meta.srcWidth; state.srcH = meta.srcHeight;
@@ -848,7 +854,7 @@ async function loadFile(file) {
 async function doExport() {
   if (!state.hasImage || state.cropping) return;
   try {
-    const res = await fetch('/api/export', { method: 'POST', body: settingsParams() });
+    const res = await api('/api/export', { method: 'POST', body: settingsParams() });
     if (!res.ok) { const j = await res.json().catch(() => ({})); showToast(j.error || 'export failed', true); return; }
     const blob = await res.blob();
     const name = (state.fileName.replace(/\.[^.]+$/, '') || 'pixeline') + '_' + (state.outW || computeDims().ow) + 'px.png';
@@ -864,7 +870,7 @@ async function doPaletteExport() {
   try {
     const p = settingsParams();
     p.set('paletteFormat', 'hex');
-    const res = await fetch('/api/palette', { method: 'POST', body: p });
+    const res = await api('/api/palette', { method: 'POST', body: p });
     if (!res.ok) { const j = await res.json().catch(() => ({})); showToast(j.error || 'palette export failed', true); return; }
     const blob = await res.blob();
     const name = (state.fileName.replace(/\.[^.]+$/, '') || 'pixeline') + '_' + (state.paletteLen || state.swatches.length || 0) + 'c.hex';

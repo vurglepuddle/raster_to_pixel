@@ -158,6 +158,9 @@ pub struct Config {
     pub outline: OutlineMode,
     /// Write an original|result side-by-side comparison sheet.
     pub compare: bool,
+    /// Refuse (with an error, before the expensive work) if the final image would
+    /// exceed this many pixels. None means no limit.
+    pub max_output_pixels: Option<u64>,
 }
 
 impl Default for Config {
@@ -192,6 +195,7 @@ impl Default for Config {
             contrast_expansion: 0,
             outline: OutlineMode::None,
             compare: false,
+            max_output_pixels: None,
         }
     }
 }
@@ -388,6 +392,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
     // Grid detection runs before contrast expansion: the stamped blobs would
     // otherwise add off-grid edge energy and could sway phase detection.
     let grid = target_grid(cleaned.as_ref().unwrap_or(src), cfg);
+    check_output_size(src_w, src_h, grid.out_w, grid.out_h, cfg)?;
 
     let mut contrast_expanded = 0usize;
     if cfg.contrast_expansion > 0 {
@@ -478,6 +483,33 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         outline,
         adaptive_fallback,
     })
+}
+
+/// Enforce `Config::max_output_pixels` using the dimensions `scale_nearest` and
+/// `compare_sheet` will allocate.
+fn check_output_size(
+    src_w: u32,
+    src_h: u32,
+    out_w: u32,
+    out_h: u32,
+    cfg: &Config,
+) -> Result<(), String> {
+    let Some(limit) = cfg.max_output_pixels else {
+        return Ok(());
+    };
+    let height = out_h as u64 * cfg.scale as u64;
+    let mut width = out_w as u64 * cfg.scale as u64;
+    if cfg.compare {
+        width += ((src_w as f64 * height as f64 / src_h as f64).round() as u64).max(1)
+            + COMPARE_GAP as u64;
+    }
+    if width.saturating_mul(height) > limit {
+        return Err(format!(
+            "a {width}x{height} image is too large to create here (limit {} megapixels); lower the scale or turn off compare",
+            limit / 1_000_000
+        ));
+    }
+    Ok(())
 }
 
 /// Estimate a good adaptive palette size from the downsampled grid: count
@@ -1398,11 +1430,13 @@ fn scale_nearest(src: &RgbaImage, scale: u32) -> RgbaImage {
     out
 }
 
+const COMPARE_GAP: u32 = 4;
+
 fn compare_sheet(original: &RgbaImage, result: &RgbaImage) -> RgbaImage {
     let h = result.height().max(1);
     let w = ((original.width() as f64 * h as f64 / original.height() as f64).round() as u32).max(1);
     let original_resized = image::imageops::resize(original, w, h, FilterType::Triangle);
-    let gap = 4;
+    let gap = COMPARE_GAP;
     let mut sheet = RgbaImage::new(w + gap + result.width(), h);
 
     for (x, y, p) in original_resized.enumerate_pixels() {
@@ -1426,6 +1460,32 @@ mod tests {
 
     fn cfg() -> Config {
         Config::default()
+    }
+
+    #[test]
+    fn output_limit_counts_scale_and_compare_before_allocating() {
+        let src = RgbaImage::from_pixel(100, 50, Rgba([10, 20, 30, 255]));
+        let limited = |scale, compare, limit| {
+            convert(
+                &src,
+                &Config {
+                    size: 100,
+                    scale,
+                    compare,
+                    max_output_pixels: Some(limit),
+                    ..cfg()
+                },
+            )
+        };
+        let result = limited(2, false, 200 * 100).unwrap();
+        assert_eq!(result.image.dimensions(), (200, 100));
+        assert!(limited(2, false, 200 * 100 - 1).is_err());
+        // Compare adds a same-height copy of the source plus the gap.
+        let sheet = limited(2, true, 404 * 100).unwrap();
+        assert_eq!(sheet.image.dimensions(), (404, 100));
+        assert!(limited(2, true, 404 * 100 - 1).is_err());
+        // The largest scale on a huge grid must report an error, not overflow.
+        assert!(limited(u32::MAX, true, 1).is_err());
     }
 
     fn default_cleanup() -> PaletteCleanup {
