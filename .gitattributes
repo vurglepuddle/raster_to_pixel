@@ -1,0 +1,2 @@
+# Shell scripts run on Linux in CI and break with CRLF line endings.
+*.sh text eol=lf

@@ -620,5 +620,6 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         contrast_expansion: args.contrast_expansion,
         outline: args.outline.into(),
         compare: args.compare,
+        max_output_pixels: None,
     })
 }

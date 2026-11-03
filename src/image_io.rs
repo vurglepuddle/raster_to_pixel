@@ -1,13 +1,14 @@
 //! Image loading helpers shared by the CLI and GUI.
 //!
 //! Most formats go through the `image` crate. On Windows, JPEGs are decoded
-//! through GDI+ because some generated JPEGs use scan/color layouts that the
-//! current pure-Rust JPEG path decodes as neon green while Windows viewers
-//! display them correctly.
+//! through GDI+ because some generated JPEGs use scan/color layouts (baseline with
+//! non-interleaved scans) that the current pure-Rust JPEG path decodes as neon green
+//! while Windows viewers display them correctly. The browser build has the same
+//! problem and solves it the same way: see `web-wasm/www/worker.js`.
 
 use std::path::Path;
 
-use image::RgbaImage;
+pub use image::RgbaImage;
 
 pub fn load_rgba_from_path(path: &Path) -> Result<RgbaImage, String> {
     #[cfg(windows)]
@@ -37,6 +38,37 @@ pub fn load_rgba_from_memory(bytes: &[u8]) -> Result<RgbaImage, String> {
         .map(|img| img.to_rgba8())
 }
 
+/// Read a source's dimensions from its header without decoding the pixels.
+pub fn probe_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    // PNG's IHDR is at a fixed offset. Read it directly: on 32-bit targets the decoder
+    // refuses huge images with a generic limit error before reporting their size.
+    const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if let (true, Some(size)) = (bytes.starts_with(PNG_SIGNATURE), bytes.get(16..24)) {
+        let [w0, w1, w2, w3, h0, h1, h2, h3] = size else {
+            unreachable!("a 16..24 slice has 8 bytes")
+        };
+        return Ok((
+            u32::from_be_bytes([*w0, *w1, *w2, *w3]),
+            u32::from_be_bytes([*h0, *h1, *h2, *h3]),
+        ));
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("decode failed: {e}"))?;
+    // Nothing is allocated for the pixels here, and a decode limit would hide the size.
+    reader.no_limits();
+    reader
+        .into_dimensions()
+        .map_err(|e| format!("decode failed: {e}"))
+}
+
+/// Wrap RGBA8 pixels decoded elsewhere (the browser's JPEG decoder).
+pub fn rgba_from_raw(width: u32, height: u32, rgba: Vec<u8>) -> Result<RgbaImage, String> {
+    RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| format!("decoded pixels do not match a {width}x{height} image"))
+}
+
+#[cfg(windows)]
 fn is_jpeg_path(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
@@ -44,6 +76,7 @@ fn is_jpeg_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(windows)]
 fn is_jpeg_bytes(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xff, 0xd8])
 }
@@ -203,5 +236,26 @@ mod windows_gdiplus {
             std::process::id(),
             nanos
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_reads_huge_png_dimensions_without_decoding() {
+        // Header of a 30000x30000 RGBA PNG whose pixel data is far too short.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(30000u32.to_be_bytes());
+        png.extend(30000u32.to_be_bytes());
+        assert_eq!(probe_dimensions(&png), Ok((30000, 30000)));
+    }
+
+    #[test]
+    fn probe_rejects_garbage_and_raw_pixels_must_match_their_size() {
+        assert!(probe_dimensions(&[1, 2, 3, 4]).is_err());
+        assert!(rgba_from_raw(2, 2, vec![0; 16]).is_ok());
+        assert!(rgba_from_raw(2, 2, vec![0; 15]).is_err());
     }
 }

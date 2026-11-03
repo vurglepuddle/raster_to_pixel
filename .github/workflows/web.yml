@@ -1,0 +1,82 @@
+name: Web version
+
+# Builds the WebAssembly site, tests it against the native pipeline in real browsers,
+# and publishes dist/ to GitHub Pages. Everything it needs is installed here: actions are
+# pinned to commits, and install-tools.sh checks each tool download against a SHA-256.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: 1.96.1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --no-self-update
+          rustup default "$RUST_VERSION"
+
+      - name: Install pinned wasm-pack and wasm-bindgen
+        run: bash web-wasm/install-tools.sh
+
+      - name: Native tests
+        run: cargo test --locked
+
+      - name: Build the site
+        run: bash web-wasm/build.sh
+
+      - name: Write native reference outputs
+        run: cargo run --locked --release --example parity_native -- target/parity
+
+      - name: Test the native GUI server
+        run: |
+          cargo build --locked --release --bin gui
+          node web-wasm/tests/native_gui.mjs
+
+      - name: Compare with native in Chrome
+        run: node web-wasm/tests/parity.mjs --browser chrome
+
+      - name: Compare with native in Firefox
+        run: |
+          if command -v firefox > /dev/null; then
+            node web-wasm/tests/parity.mjs --browser firefox
+          else
+            echo "::warning::Firefox is not on this runner; only Chrome was tested"
+          fi
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist
+
+  deploy:
+    # Only main publishes. Pull requests stop after the tests above.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

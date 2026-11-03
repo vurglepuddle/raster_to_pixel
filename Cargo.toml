@@ -7,5 +7,13 @@ license = "MIT"
 # Core algorithms are pure std and testable offline. The CLI/GUI use the approved
 # image and clap crates for file formats and argument parsing.
 [dependencies]
-clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+# Only the native CLI parses arguments; keeps clap out of the WebAssembly build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap = { version = "4", features = ["derive"] }
+
+# Writes the native outputs the browser build is compared against (see web-wasm/README.md).
+[[example]]
+name = "parity_native"
+path = "web-wasm/tests/parity_native.rs"
