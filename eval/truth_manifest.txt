@@ -1,0 +1,32 @@
+# Paths relative to repo root. One case: path.png x y w h tag1,tag2 [native=k] [variants=full|core]
+# Crop coordinates are AFTER verified nearest downscale by native=k. Quote paths containing spaces.
+# Owner-supplied truth lives under examples/truth/. Use variants=core for large scenes.
+# Curated 2026-11-13 from the owner's own/purchased/CC0 library; provenance in examples/truth/SOURCES.txt.
+# Tag dev|holdout per case: tune on dev only. pixeline-cleaned = cleaned by the old engine (secondary truth).
+examples/truth/icons/sheet_weapons_potions_res_flatbg.png 0 0 138 104 icons,flat-bg,outline,dev variants=full
+examples/truth/icons/sheet_armor_shield_trinket_alpha.png 0 0 138 104 icons,alpha,outline,dev variants=full
+examples/truth/icons/sheet_ability_wands_alpha_nogap.png 0 0 128 96 icons,alpha,dense,dev variants=full
+examples/truth/icons/sheet_portraits_darkbg.png 0 0 200 134 portrait,flat-bg,dark,dev variants=full
+examples/truth/icons/sheet_status16_lightbg.png 0 0 137 35 icons,16px,flat-bg,light,dev variants=full
+examples/truth/icons/sheet_holdout_alpha.png 0 0 138 104 icons,alpha,outline,holdout variants=full
+examples/truth/icons/sheet_holdout_flatbg.png 0 0 138 104 icons,flat-bg,thin,holdout variants=full
+examples/truth/ninja/boss_0.png 0 0 57 57 sprite,alpha,dev variants=full
+examples/truth/ninja/boss_1.png 0 0 38 38 sprite,alpha,holdout variants=full
+examples/truth/ninja/monster_0.png 0 0 38 38 sprite,alpha,small,dev variants=full
+examples/truth/ninja/monster_1.png 0 0 64 64 sprite,alpha,small,dev variants=full
+examples/truth/ninja/character_0.png 0 0 16 16 sprite,alpha,small,dev variants=full
+examples/truth/ninja/character_1.png 0 0 16 16 sprite,alpha,small,holdout variants=full
+examples/truth/ninja/tileset_0.png 0 0 128 128 tiles,texture,dev variants=full
+examples/truth/ninja/tileset_1.png 0 0 128 128 tiles,texture,holdout variants=full
+examples/truth/farm/tinygarden_objects.png 0 0 144 128 objects,alpha,rich-palette,dev variants=full
+examples/truth/farm/tinygarden_tileset.png 0 0 192 96 tiles,texture,dev variants=full
+examples/truth/farm/house.png 0 0 48 64 building,alpha,holdout variants=full
+examples/truth/farm/archer.png 0 0 192 48 sprite,alpha,small,dev variants=full
+examples/truth/lineicons/rpg.png 0 0 128 128 lineart,3-color,dev variants=full
+examples/truth/lineicons/weather.png 0 0 128 128 lineart,3-color,holdout variants=full
+examples/truth/scenes/master_bg_new.png 0 0 256 600 scene,rich-palette,pixeline-cleaned,dev variants=core native=3
+examples/truth/scenes/menu_title.png 0 0 321 406 scene,title,alpha,pixeline-cleaned,holdout variants=core native=4
+examples/truth/downscaled/baseline_00413__64px.png 0 0 64 64 sprite,pixeline-cleaned,dev variants=full
+examples/truth/downscaled/baseline_00419__64px.png 0 0 64 64 sprite,pixeline-cleaned,dev variants=full
+examples/truth/downscaled/baseline_00341__128px.png 0 0 128 128 sprite,pixeline-cleaned,dev variants=full
+examples/truth/downscaled/baseline_00352__64px.png 0 0 64 64 sprite,pixeline-cleaned,holdout variants=full

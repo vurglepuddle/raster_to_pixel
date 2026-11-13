@@ -17,3 +17,7 @@ clap = { version = "4", features = ["derive"] }
 [[example]]
 name = "parity_native"
 path = "web-wasm/tests/parity_native.rs"
+
+[[example]]
+name = "eval"
+path = "eval/eval.rs"

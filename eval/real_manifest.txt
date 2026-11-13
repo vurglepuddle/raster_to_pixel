@@ -1,0 +1,35 @@
+# path split comma-separated-tags
+# Numeric filename suffix is presumed source px/art px, not certified truth.
+# *_fail* denotes former failures, now considered mediocre; never ground truth.
+examples/alch_5.png dev icon
+examples/AlpineRuin_1.webp dev scene,native
+examples/BG_5.png dev scene
+examples/border_5.png dev border
+examples/castle_4.png holdout scene
+examples/flowers_white_5.png holdout floral,highlight
+examples/forest_hut_4.png dev scene
+examples/forest_view_2_fail.jpg dev scene,former-failure,jpeg
+examples/gemm_5_fail.png dev lettering,accent,former-failure
+examples/girl_8.jpeg dev sprite,jpeg
+examples/low_fidelity_portrait_9.png dev portrait
+examples/plant_4.png holdout sprite
+examples/pumpkin_5_new_fail.png dev border,former-failure
+examples/source_fuzzy_5.png dev fuzzy
+examples/star_5.png dev scene
+examples/statue_9.png holdout sprite
+# Owner's production inputs (Krea2 generations). Accepted old-engine outputs: examples/krea2_accepted/.
+examples/krea2/baseline_00265_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00317_.png dev krea2,generated-pixel,portrait,accepted
+examples/krea2/baseline_00354_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00358_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00383_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00387_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00389_.png holdout krea2,generated-pixel,accepted
+examples/krea2/baseline_00390_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00406_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00409_.png dev krea2,generated-pixel,accepted
+examples/krea2/baseline_00427_.png holdout krea2,generated-pixel,accepted
+examples/krea2/baseline_00045_.png dev krea2,painterly,no-grid,dark
+examples/krea2/conditioning_noise_00006_.png dev krea2,painterly,no-grid
+examples/krea2/TensorArt_refined_00001_.png holdout krea2,painterly,no-grid
+examples/krea2/TensorArt_refined_00003_.png dev krea2,painterly,no-grid,dark

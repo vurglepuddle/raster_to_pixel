@@ -4,6 +4,7 @@
 /*.png
 /examples/
 /design/
+/eval_out/
 
 # Keep project notes/plans local, but allow the public README.
 *.md
@@ -14,3 +15,6 @@
 /web-wasm/target/
 /web-wasm/pkg/
 /web-wasm/.tools/
+
+# Persistent codex worker session id (local only).
+/.codex-worker-id
