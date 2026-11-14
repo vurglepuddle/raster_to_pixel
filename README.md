@@ -36,6 +36,11 @@ so a smaller region reduces processing work; the full file is still decoded on l
 
 For most images, start with auto grid and auto colors:
 
+Auto finds the pixel grid and infers the palette. Smart cells reconstruct the
+colors and undo blur, while the elastic grid follows nearby off-grid edges.
+In the GUI, the elastic grid is the **Follow off-grid edges** checkbox;
+use `--no-elastic` in the CLI to turn it off.
+
 ```cmd
 cargo run --bin raster_to_pixel -- input.png output.png --auto-pixel-size --auto-colors --scale 8
 ```
@@ -68,6 +73,7 @@ Pick the output grid:
 --pixel-size 5         Force the scale: each output pixel represents 5 source pixels.
 --size 64              Ignore pixel scale and make the long side 64 output pixels.
 --no-snap-grid         Do not shift the sampling grid onto detected pixel boundaries.
+--no-elastic           Keep Smart cells on a rigid grid instead of following nearby edges.
 --phase-x 2 --phase-y 0
                        Manually shift the sampling grid if detection lands off-phase.
 ```
@@ -75,17 +81,21 @@ Pick the output grid:
 Pick colors:
 
 ```cmd
---auto-colors          Pick 16/32/64/128/256 colors from the image.
+--auto-colors          Infer the palette and its size, capped at 64 inferred colors.
 --colors 32            Force an adaptive palette size instead of auto-colors, any integer as argument.
 --palette pico8        Use a fixed palette instead of auto-colors/colors: pico8, gameboy, sweetie16, or a file.
 --palette file.hex     Use a Lospec .hex list or GIMP .gpl palette.
 --palette-out p.hex    Save the result palette as .hex, .gpl, or .png strip.
 ```
 
-Tune adaptive palettes:
+Clean grids can keep up to 256 exact colors. With no grid, Auto keeps small images
+(up to 400 pixels on the long side) or images with at most 256 opaque colors at
+1:1 resolution; larger images reduce to about 192 pixels on the long side.
+
+Tune manual adaptive palettes (when Auto colors is off):
 
 ```cmd
---quantizer kmeans     Default adaptive palette builder; stable all-rounder.
+--quantizer kmeans     Default builder for a manually chosen color count.
 --quantizer wu         Oklab Wu quantizer; can separate big color families better.
 --palette-merge .04    Merge near-duplicate palette entries after quantization.
 --highlight-collapse .03
@@ -96,7 +106,8 @@ Tune adaptive palettes:
 Pick how each source cell becomes one pixel:
 
 ```cmd
---cell detail          Default. Median on busy cells, dominant color on calm cells.
+--cell smart           Default. Reconstruct cell colors and deblur; native 1:1 sources skip deblur.
+--cell detail          Median on busy cells, dominant color on calm cells.
 --cell median          Good for fuzzy edges; avoids odd dominant-color surprises.
 --cell dominant        Crispest; best when each cell has one clear winning color.
 --cell box             Simple weighted average; smoothest, least pixel-art-like.
@@ -155,7 +166,13 @@ The pipeline picks a target grid, downsamples in linear RGB, builds or applies a
 palette in Oklab, optionally dithers, then writes the raw grid or a
 nearest-neighbor scaled PNG.
 
-The default `detail` cell mode chooses between median and dominant per cell:
+The default `smart` mode samples cell interiors, reconstructs colors and applies
+cell-level deblur. Sources Auto keeps at native 1:1 resolution skip deblur.
+When a grid is found, elastic boundaries follow nearby edges by default.
+Auto colors infers both palette entries and count; it bypasses the manual
+highlight/shadow collapse controls.
+
+The optional `detail` mode chooses between median and dominant per cell:
 
 - Median uses the per-channel median as a target, then snaps to the nearest real
   source color from that cell. This avoids synthetic fringe colors.
@@ -172,7 +189,7 @@ The default `detail` cell mode chooses between median and dominant per cell:
 - Pixel-size modes can snap the sampling grid to the strongest detected edge phase
   (with a reported confidence), which helps when the source grid is offset by a few
   pixels; `--phase-x`/`--phase-y` override the detection.
-- Adaptive palettes merge generated near-white and near-black noise before
+- Manual adaptive palettes merge generated near-white and near-black noise before
   quantization. Near-whites collapse to white; near-blacks collapse to the
   darkest source color instead of inventing pure black.
 
@@ -185,7 +202,7 @@ Optional cleanup stages:
 - `--cleanup` runs opt-in morphology on the finished grid: fill enclosed pinholes,
   drop light matte halos along edges, remove diagonal jaggy nubs, and delete
   isolated specks. Single-pixel details that repeat nearby are protected by default.
-- `--quantizer wu` swaps the adaptive palette builder for Wu 1992 moment
+- With Auto colors off, `--quantizer wu` swaps the palette builder for Wu 1992 moment
   quantization running on an Oklab lattice. It can separate dominant color
   families better at 16-64 colors. `--palette-merge` then collapses surviving
   near-duplicate entries, keeping the heaviest real color of each group.

@@ -615,6 +615,55 @@ mod tests {
     }
 
     #[test]
+    fn turn_counts_follow_each_axis_and_ignore_transparent_rgb() {
+        let values = [0, 0, 80, 80, 0, 0, 80, 80, 0, 0];
+        let stripes = RgbaImage::from_fn(10, 8, |x, _| Rgba([values[x as usize], 0, 0, 255]));
+        assert_eq!(turn_counts(&stripes), (vec![3; 8], vec![0; 10]));
+        let transposed = RgbaImage::from_fn(8, 10, |x, y| *stripes.get_pixel(y, x));
+        assert_eq!(turn_counts(&transposed), (vec![0; 10], vec![3; 8]));
+        let invisible = RgbaImage::from_fn(10, 8, |x, _| Rgba([values[x as usize], 255, 70, 0]));
+        assert_eq!(turn_counts(&invisible), (vec![0; 8], vec![0; 10]));
+    }
+
+    #[test]
+    fn brightness_turns_require_absolute_and_relative_hysteresis() {
+        for (swing, expected) in [(23, 0), (24, 8)] {
+            let stripes = RgbaImage::from_fn(10, 1, |x, _| {
+                Rgba([if x % 2 == 0 { 0 } else { swing }, 0, 0, 255])
+            });
+            assert_eq!(turn_counts(&stripes).0, vec![expected]);
+        }
+        // The 30-unit dip exceeds the absolute threshold, but not 15% of 255.
+        let values = [0, 255, 225, 255, 0];
+        let line = RgbaImage::from_fn(5, 1, |x, _| Rgba([values[x as usize], 0, 0, 255]));
+        assert_eq!(turn_counts(&line).0, vec![1]);
+    }
+
+    #[test]
+    fn pitch_cap_ignores_only_the_highest_tenth_of_scan_lines() {
+        assert_eq!(min_cells(&[]), 0.0);
+        let one_outlier = [2, 2, 2, 2, 2, 2, 2, 2, 2, 100];
+        assert_eq!(min_cells(&one_outlier), 2.0);
+        let two_outliers = [2, 2, 2, 2, 2, 2, 2, 2, 100, 100];
+        assert_eq!(min_cells(&two_outliers), 100.0);
+        assert_eq!(overfull_share(&one_outlier, 2.0), 0.1);
+        assert_eq!(overfull_share(&[], 2.0), 0.0);
+    }
+
+    #[test]
+    fn native_one_pixel_features_cap_pitch_below_two() {
+        let img = RgbaImage::from_fn(96, 96, |x, y| {
+            let v = if (x + y) % 2 == 0 { 0 } else { 255 };
+            Rgba([v, v, v, 255])
+        });
+        let (rows, cols) = turn_counts(&img);
+        assert_eq!(min_cells(&rows), 94.0);
+        assert_eq!(min_cells(&cols), 94.0);
+        assert!(img.width() as f64 / min_cells(&rows) < 2.0);
+        assert_eq!(detect(&img), GridDecision::NoGrid { coherence: 0.0, significance: 0.0 });
+    }
+
+    #[test]
     fn sin_cos_turn_matches_std() {
         for i in -2000..2000 {
             let t = i as f64 / 997.0;

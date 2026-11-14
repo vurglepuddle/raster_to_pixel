@@ -492,6 +492,11 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
     // Smart cells are a reconstruction of the art pixels, so they also undo
     // the neighbour mixing a blurred or resampled source carries.
     let cell_leak = (cfg.cell == CellMode::Smart).then(|| {
+        // Native sources already have one source pixel per art cell. Their
+        // shading or compression is not evidence of a resized cell grid.
+        if grid.auto == Some(AutoGrid::Native) {
+            return deblur::Leak::default();
+        }
         deblur::deblur_cells(
             &mut small,
             grid.out_w as usize,
@@ -1555,6 +1560,29 @@ mod tests {
         let grid = target_grid(&img, &config);
         assert_eq!((grid.out_w, grid.out_h), (37, 23));
         assert_eq!(grid.detected_pixel_size, Some(1.0));
+    }
+
+    #[test]
+    fn native_smart_cells_skip_deblur_even_when_shading_looks_like_leak() {
+        // The short axis rules out a lattice; repeated shaded steps would
+        // otherwise produce a strong, misleading deblur estimate.
+        let shades = [32, 32, 52, 212, 232, 232, 212, 52];
+        let img = RgbaImage::from_fn(5, 96, |_, y| {
+            let v = shades[y as usize % shades.len()];
+            Rgba([v, v, v, 255])
+        });
+        let mut cells = rgba8_to_linear(&img);
+        assert!(deblur::deblur_cells(&mut cells, 5, 96, 0.5).x > 0.05);
+        let config = Config {
+            auto_pixel_size: true,
+            cell: CellMode::Smart,
+            palette: PaletteChoice::HexList("202020\n343434\nd4d4d4\ne8e8e8".into()),
+            ..cfg()
+        };
+        let result = convert(&img, &config).unwrap();
+        assert_eq!(result.auto_grid, Some(AutoGrid::Native));
+        assert_eq!(result.cell_leak, Some((0.0, 0.0)));
+        assert_eq!(result.image, img);
     }
 
     #[test]

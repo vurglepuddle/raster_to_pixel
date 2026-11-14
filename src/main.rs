@@ -43,7 +43,8 @@ struct Args {
     #[arg(long)]
     pixel_size: Option<f64>,
 
-    /// Estimate source pixels per output pixel from image edges. Ignored when --pixel-size is set.
+    /// Infer the pixel grid. Without a grid, keep small/few-color sources 1:1;
+    /// reduce large sources to about 192 pixels long. Ignored with --pixel-size.
     #[arg(long)]
     auto_pixel_size: bool,
 
@@ -51,7 +52,7 @@ struct Args {
     #[arg(long)]
     no_snap_grid: bool,
 
-    /// Adaptive palette size.
+    /// Manual adaptive palette size (ignored with --auto-colors).
     #[arg(long, default_value_t = 16)]
     colors: usize,
 
@@ -75,13 +76,13 @@ struct Args {
     #[arg(long, default_value_t = 128)]
     alpha_threshold: u8,
 
-    /// Cell reduction mode used during downsampling.
+    /// Cell sampling. Smart (default) reconstructs cells and deblurs them,
+    /// except sources Auto keeps at native 1:1 resolution.
     #[arg(long, value_enum, default_value_t = CellModeArg::Smart)]
     cell: CellModeArg,
 
-    /// Keep every cell on the rigid pixel grid. By default smart cells let
-    /// their boundaries follow nearby edges, which recovers lettering, thin
-    /// outlines and ornaments drawn off the grid.
+    /// Disable the elastic grid. Smart cells follow nearby off-grid edges
+    /// by default when a grid is found (GUI: "Follow off-grid edges").
     #[arg(long)]
     no_elastic: bool,
 
@@ -121,7 +122,8 @@ struct Args {
     #[arg(long)]
     no_protect_details: bool,
 
-    /// Pick the adaptive color count automatically (overrides --colors).
+    /// Infer palette colors and count (overrides --colors). Cap: 64 inferred
+    /// colors; clean grids can retain up to 256 exact colors.
     #[arg(long)]
     auto_colors: bool,
 
@@ -631,4 +633,24 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         compare: args.compare,
         max_output_pixels: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_elastic_flag_reaches_conversion_config() {
+        let defaults = Args::try_parse_from([
+            "raster_to_pixel", "input.png", "output.png", "--auto-pixel-size",
+        ]).unwrap();
+        assert!(build_config(&defaults).unwrap().elastic);
+        let disabled = Args::try_parse_from([
+            "raster_to_pixel", "input.png", "output.png", "--auto-pixel-size", "--no-elastic",
+        ]).unwrap();
+        let config = build_config(&disabled).unwrap();
+        assert!(!config.elastic);
+        assert!(config.auto_pixel_size);
+        assert_eq!(config.cell, CellMode::Smart);
+    }
 }

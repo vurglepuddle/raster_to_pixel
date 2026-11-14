@@ -407,6 +407,21 @@ mod tests {
     }
 
     #[test]
+    fn elastic_setting_reaches_preview_and_export_config() {
+        for preview in [true, false] {
+            let default = config_from_form(&parse_form("sizeMode=auto"), preview).unwrap();
+            assert!(default.elastic);
+            for value in ["false", "0", "off"] {
+                let form = parse_form(&format!("sizeMode=auto&elastic={value}"));
+                let config = config_from_form(&form, preview).unwrap();
+                assert!(!config.elastic, "elastic={value}, preview={preview}");
+                assert!(config.auto_pixel_size);
+                assert_eq!(config.cell, CellMode::Smart);
+            }
+        }
+    }
+
+    #[test]
     fn crop_settings_apply_to_preview_export_and_palette() {
         let form = parse_form("crop=2%2C3%2C4%2C5&scale=8&compare=true");
         let preview = config_from_form(&form, true).unwrap();

@@ -17,7 +17,7 @@ use raster_to_pixel::{
 /// The frontend's defaults, in the form `settingsParams()` sends them.
 const GUI_DEFAULTS: &str = "sizeMode=auto&size=64&pixelSize=6&snapGrid=true&colors=16\
 &palette=adaptive&customHex=&highlightCollapse=0.03&shadowCollapse=0.16&paletteMerge=0\
-&quantizer=kmeans&cell=detail&dominantThreshold=0.25&adaptiveIterations=3&contrastExpansion=0\
+&quantizer=kmeans&cell=smart&elastic=true&dominantThreshold=0.25&adaptiveIterations=3&contrastExpansion=0\
 &dither=none&ditherStrength=0.35&alphaThreshold=128&alphaMode=preserve&bgTolerance=0.1\
 &cleanup=none&outline=none&scale=1&colorKey=00ff00&protectDetails=true&autoColors=true\
 &compare=false";
