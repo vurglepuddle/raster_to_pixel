@@ -79,10 +79,11 @@ struct Args {
     #[arg(long, value_enum, default_value_t = CellModeArg::Smart)]
     cell: CellModeArg,
 
-    /// Let cell boundaries follow nearby edges (smart cells only). Recovers
-    /// lettering, thin outlines and ornaments drawn off the pixel grid.
+    /// Keep every cell on the rigid pixel grid. By default smart cells let
+    /// their boundaries follow nearby edges, which recovers lettering, thin
+    /// outlines and ornaments drawn off the grid.
     #[arg(long)]
-    elastic: bool,
+    no_elastic: bool,
 
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     #[arg(long, default_value_t = 0.25)]
@@ -610,7 +611,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         scale: args.scale,
         alpha_threshold: args.alpha_threshold,
         cell: args.cell.into(),
-        elastic: args.elastic,
+        elastic: !args.no_elastic,
         dominant_threshold: args.dominant_threshold,
         adaptive_iterations: args.adaptive_iterations,
         highlight_collapse: args.highlight_collapse,

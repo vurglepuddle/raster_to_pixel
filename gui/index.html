@@ -265,6 +265,7 @@
 
       <div class="sec">Downsampling</div>
       <div class="segwrap" id="cellGrp"></div>
+      <label class="row nb checkrow" id="rowElastic" title="Smart cells only. Cell boundaries follow nearby edges: recovers lettering, thin outlines and ornaments drawn off the pixel grid."><span class="lbl">Follow off-grid edges</span><input type="checkbox" id="inElastic"></label>
       <div class="row nb" id="rowDominance" style="padding-top:10px;"><span class="lbl">Dominance</span>
         <input type="range" min="0" max="1" step="0.05" id="inDominance"><span class="val" id="dominanceVal">0.25</span></div>
       <div class="row nb" id="rowAdaptIter" title="EM refinement passes for the Adapt cell mode. More is slower and sharper."><span class="lbl">Iterations</span>
@@ -345,7 +346,7 @@ const state = {
   cell: 'smart', dominantThreshold: 0.25, adaptiveIterations: 3, adaptiveFallback: false,
   dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   alphaMode: 'preserve', bgTolerance: 0.10, keyColor: '#00ff00',
-  cleanup: 'none', protectDetails: true, outline: 'none',
+  cleanup: 'none', protectDetails: true, elastic: true, outline: 'none',
   quantizer: 'kmeans', paletteMerge: 0, contrastExpansion: 0,
   scale: 1, compare: false, zoom: 6, panX: 0, panY: 0, viewMode: 'result', compareSplit: 50, showGrid: false,
   outW: 0, outH: 0, paletteLen: 0, gridPhase: '', phaseConf: '', autoColorsChosen: null, cleanupRemoved: 0, rendering: false,
@@ -396,6 +397,7 @@ $('inTolerance').oninput = e => set({ bgTolerance: clamp(parseFloat(e.target.val
 $('inMerge').oninput = e => set({ paletteMerge: clamp(parseFloat(e.target.value), 0, 0.12) });
 $('inKeyColor').oninput = e => set({ keyColor: e.target.value });
 $('inProtect').onchange = e => set({ protectDetails: e.target.checked });
+$('inElastic').onchange = e => set({ elastic: e.target.checked });
 $('gridBtn').onclick = () => { state.showGrid = !state.showGrid; updatePreviewImg(); render(); };
 $('inHighlight').oninput = e => set({ highlightCollapse: clamp(parseFloat(e.target.value), 0, 0.25) });
 $('inShadow').oninput = e => set({ shadowCollapse: clamp(parseFloat(e.target.value), 0, 0.35) });
@@ -767,6 +769,7 @@ function settingsParams() {
   ['sizeMode','size','pixelSize','snapGrid','colors','palette','customHex','highlightCollapse','shadowCollapse','paletteMerge','quantizer','cell','dominantThreshold','adaptiveIterations','contrastExpansion','dither','ditherStrength','alphaThreshold','alphaMode','bgTolerance','cleanup','outline','scale'].forEach(k => p.set(k, state[k]));
   p.set('colorKey', state.keyColor.replace('#', ''));
   p.set('protectDetails', state.protectDetails ? 'true' : 'false');
+  p.set('elastic', state.elastic ? 'true' : 'false');
   p.set('autoColors', state.autoColors ? 'true' : 'false');
   p.set('compare', state.compare ? 'true' : 'false');
   if (state.crop) p.set('crop', [state.crop.x, state.crop.y, state.crop.width, state.crop.height].join(','));
@@ -961,6 +964,8 @@ function render() {
   setVal($('inTolerance'), s.bgTolerance);
   setVal($('inKeyColor'), s.keyColor);
   $('inProtect').checked = s.protectDetails;
+  $('inElastic').checked = s.elastic;
+  $('rowElastic').style.display = s.cell === 'smart' ? 'flex' : 'none';
   setVal($('inCustom'), s.customHex);
   setVal($('inMerge'), s.paletteMerge);
   $('inPalette').value = s.palette;

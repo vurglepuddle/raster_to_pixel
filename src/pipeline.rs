@@ -171,8 +171,9 @@ pub struct Config {
     pub outline: OutlineMode,
     /// Write an original|result side-by-side comparison sheet.
     pub compare: bool,
-    /// Let cell boundaries follow nearby edges (`CellMode::Smart` only):
-    /// recovers lettering, thin outlines and ornaments drawn off the grid.
+    /// Let cell boundaries follow nearby edges: recovers lettering, thin
+    /// outlines and ornaments drawn off the grid. Used with `CellMode::Smart`
+    /// when the cells follow a pixel grid (detected, or a snapped pixel size).
     pub elastic: bool,
     /// Refuse (with an error, before the expensive work) if the final image would
     /// exceed this many pixels. None means no limit.
@@ -211,7 +212,7 @@ impl Default for Config {
             contrast_expansion: 0,
             outline: OutlineMode::None,
             compare: false,
-            elastic: false,
+            elastic: true,
             max_output_pixels: None,
         }
     }
@@ -462,7 +463,11 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
             sampling.cell_h,
             cfg.adaptive_iterations,
         );
-    let elastic_grid = (cfg.elastic && cfg.cell == CellMode::Smart)
+    // Elastic boundaries presuppose art pixels: a source with no grid has
+    // detail finer than the cells, which they would turn into speckle.
+    let on_grid = grid.sampling.is_some()
+        && !matches!(grid.auto, Some(AutoGrid::Native | AutoGrid::Reduced));
+    let elastic_grid = (cfg.elastic && cfg.cell == CellMode::Smart && on_grid)
         .then(|| elastic::fit(work, sampling, grid.out_w as usize, grid.out_h as usize))
         .flatten();
     let mut small = match &elastic_grid {

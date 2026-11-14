@@ -267,7 +267,7 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Result<Config
         },
         alpha_threshold: parse_or::<u16>(get("alphaThreshold"), 128).min(255) as u8,
         cell,
-        elastic: matches!(get("elastic"), Some("true") | Some("1")),
+        elastic: !matches!(get("elastic"), Some("false" | "0" | "off")),
         dominant_threshold: parse_or::<f32>(get("dominantThreshold"), 0.25).clamp(0.0, 1.0),
         adaptive_iterations: parse_or::<u32>(
             get("adaptiveIterations"),
