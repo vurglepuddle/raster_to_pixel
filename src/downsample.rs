@@ -28,6 +28,12 @@ pub enum CellMode {
     /// where median/dominant lose texture and contours. Falls back to
     /// `Detail` when the job exceeds `adaptive_fits_budget`.
     Adaptive,
+    /// The colour the art pixel most plausibly had: the mean of the cell's
+    /// dominant colour mode, with pixels weighted toward the cell centre so
+    /// blur from neighbouring cells and compression noise do not leak in.
+    /// Unlike the other modes it averages (denoises) instead of snapping to
+    /// one source pixel. Default for Auto.
+    Smart,
 }
 
 pub const DEFAULT_DOMINANT_THRESHOLD: f32 = 0.25;
@@ -209,6 +215,7 @@ pub fn downsample_grid_opts(
     };
 
     let mut out = Vec::with_capacity(dst_w * dst_h * 4);
+    let mut scratch = SmartScratch::default();
     for cy in 0..dst_h {
         // f64 bounds so 1000px -> 64 cells has no drift/truncation.
         let y0 = grid.origin_y + cy as f64 * grid.cell_h;
@@ -216,6 +223,11 @@ pub fn downsample_grid_opts(
         for cx in 0..dst_w {
             let x0 = grid.origin_x + cx as f64 * grid.cell_w;
             let x1 = grid.origin_x + (cx + 1) as f64 * grid.cell_w;
+            if mode == CellMode::Smart {
+                let px = reduce_cell_smart(src, src_w, src_h, [x0, x1, y0, y1], &mut scratch);
+                out.extend_from_slice(&px);
+                continue;
+            }
             let cell = collect_cell(src, src_w, src_h, x0, x1, y0, y1);
             let px = match &kernels {
                 Some(kernels) => {
@@ -312,7 +324,8 @@ fn reduce_cell(cell: &[WeightedPixel], mode: CellMode, dominant_threshold: f32) 
         CellMode::Median => reduce_median(cell, a_mean),
         // Adaptive cells are reduced by `reduce_cell_adaptive`; a bare
         // Adaptive here means no kernel is available, so act like Detail.
-        CellMode::Detail | CellMode::Adaptive => {
+        // Smart cells never reach this function.
+        CellMode::Detail | CellMode::Adaptive | CellMode::Smart => {
             if luma_range(cell) >= DETAIL_LUMA_SPLIT {
                 reduce_median(cell, a_mean)
             } else {
@@ -365,6 +378,161 @@ fn reduce_cell_adaptive(
         Some(rgba) => [rgba[0], rgba[1], rgba[2], a_mean],
         None => reduce_median(cell, a_mean),
     }
+}
+
+/// Oklab radius of one colour mode inside a cell. Pixels farther than this
+/// from the mode belong to something else (a neighbouring cell's blur, a
+/// second colour sharing the cell) and are left out of the mean. Artist ramp
+/// steps are 0.03 and up, noise within a flat cell is well below.
+const SMART_MODE_RADIUS: f32 = 0.06;
+const SMART_MODE_ITERATIONS: usize = 4;
+
+#[derive(Clone, Copy)]
+struct SmartPixel {
+    rgb: [f32; 3],
+    lab: [f32; 3],
+    weight: f32,
+}
+
+#[derive(Default)]
+struct SmartScratch {
+    pixels: Vec<SmartPixel>,
+    sorted: Vec<(f32, f32)>,
+}
+
+/// Centre weight for a pixel whose centre is `u` cells from the cell centre:
+/// 1 in the middle, falling smoothly to 0 at the cell boundary.
+fn centre_window(u: f64) -> f64 {
+    let t = 1.0 - 4.0 * u * u;
+    if t <= 0.0 {
+        0.0
+    } else {
+        t * t
+    }
+}
+
+/// `CellMode::Smart`: mean of the dominant colour mode, centre-weighted.
+/// `bounds` is `[x0, x1, y0, y1]` in source coordinates.
+fn reduce_cell_smart(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    bounds: [f64; 4],
+    scratch: &mut SmartScratch,
+) -> [f32; 4] {
+    let [x0, x1, y0, y1] = bounds;
+    let ix0 = x0.floor().max(0.0) as usize;
+    let ix1 = (x1.ceil().min(src_w as f64).max(0.0)) as usize;
+    let iy0 = y0.floor().max(0.0) as usize;
+    let iy1 = (y1.ceil().min(src_h as f64).max(0.0)) as usize;
+    if ix0 >= ix1 || iy0 >= iy1 {
+        return [0.0; 4];
+    }
+    let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    let (cw, ch) = (x1 - x0, y1 - y0);
+
+    let pixels = &mut scratch.pixels;
+    pixels.clear();
+    let (mut area, mut a_sum, mut window_sum) = (0f32, 0f32, 0f32);
+    for y in iy0..iy1 {
+        let wy = overlap_1d(y0, y1, y as f64, y as f64 + 1.0);
+        if wy <= 0.0 {
+            continue;
+        }
+        let hy = centre_window((y as f64 + 0.5 - cy) / ch);
+        for x in ix0..ix1 {
+            let wx = overlap_1d(x0, x1, x as f64, x as f64 + 1.0);
+            if wx <= 0.0 {
+                continue;
+            }
+            let i = (y * src_w + x) * 4;
+            let overlap = (wx * wy) as f32;
+            let alpha = src[i + 3];
+            area += overlap;
+            a_sum += overlap * alpha;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let window = (hy * centre_window((x as f64 + 0.5 - cx) / cw)) as f32;
+            // `lab[0]` carries the window until we know it leaves anything.
+            pixels.push(SmartPixel {
+                rgb: [src[i], src[i + 1], src[i + 2]],
+                lab: [window, 0.0, 0.0],
+                weight: overlap * alpha,
+            });
+            window_sum += overlap * alpha * window;
+        }
+    }
+    if area <= f32::EPSILON || a_sum <= f32::EPSILON || pixels.is_empty() {
+        return [0.0; 4];
+    }
+    let a_mean = a_sum / area;
+
+    // A flat cell needs no statistics (and stays bit-exact).
+    let first = pixels[0].rgb;
+    if pixels.iter().all(|p| p.rgb == first) {
+        return [first[0], first[1], first[2], a_mean];
+    }
+
+    let use_window = window_sum > a_sum * 1e-3;
+    for p in pixels.iter_mut() {
+        if use_window {
+            p.weight *= p.lab[0];
+        }
+        p.lab = linear_to_oklab(p.rgb[0], p.rgb[1], p.rgb[2]);
+    }
+
+    // Start at the weighted per-channel median: it lies in (or next to) the
+    // majority colour even when a second colour shares the cell.
+    let mut mode = [0f32; 3];
+    for (ch, value) in mode.iter_mut().enumerate() {
+        let sorted = &mut scratch.sorted;
+        sorted.clear();
+        sorted.extend(
+            pixels
+                .iter()
+                .filter(|p| p.weight > 0.0)
+                .map(|p| (p.lab[ch], p.weight)),
+        );
+        sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        *value = weighted_median(sorted);
+    }
+
+    let r2 = SMART_MODE_RADIUS * SMART_MODE_RADIUS;
+    let mut rgb = [0f32; 3];
+    for _ in 0..SMART_MODE_ITERATIONS {
+        let (mut w_sum, mut lab_sum, mut rgb_sum) = (0f32, [0f32; 3], [0f32; 3]);
+        for p in pixels.iter() {
+            if p.weight > 0.0 && oklab_dist2(p.lab, mode) <= r2 {
+                w_sum += p.weight;
+                for ch in 0..3 {
+                    lab_sum[ch] += p.lab[ch] * p.weight;
+                    rgb_sum[ch] += p.rgb[ch] * p.weight;
+                }
+            }
+        }
+        if w_sum <= 0.0 {
+            // The median fell between two colours: restart from the real
+            // pixel nearest to it (ties: heavier, then scan order).
+            let mut best = pixels[0];
+            let mut best_d = f32::INFINITY;
+            for p in pixels.iter().filter(|p| p.weight > 0.0) {
+                let d = oklab_dist2(p.lab, mode);
+                if d < best_d || (d == best_d && p.weight > best.weight) {
+                    best = *p;
+                    best_d = d;
+                }
+            }
+            mode = best.lab;
+            rgb = best.rgb;
+            continue;
+        }
+        for ch in 0..3 {
+            mode[ch] = lab_sum[ch] / w_sum;
+            rgb[ch] = rgb_sum[ch] / w_sum;
+        }
+    }
+    [rgb[0], rgb[1], rgb[2], a_mean]
 }
 
 fn reduce_box(cell: &[WeightedPixel], a_sum: f32, a_mean: f32) -> [f32; 4] {

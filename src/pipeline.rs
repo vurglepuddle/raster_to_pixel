@@ -14,6 +14,8 @@ use image::{imageops::FilterType, Rgba, RgbaImage};
 
 use crate::{
     alpha::{apply_alpha_mode, AlphaMode},
+    artpalette,
+    deblur,
     color::{linear_to_oklab, linear_to_srgb, oklab_to_srgb8, srgb8_to_oklab, srgb_to_linear},
     dither::ordered_dither,
     downsample::{
@@ -54,9 +56,6 @@ pub enum Quantizer {
 pub const DEFAULT_HIGHLIGHT_COLLAPSE: f32 = 0.03;
 pub const DEFAULT_SHADOW_COLLAPSE: f32 = 0.16;
 pub const DEFAULT_BG_TOLERANCE: f32 = 0.10;
-
-/// Presets `auto_colors` snaps to (smallest preset >= significant buckets).
-pub const AUTO_COLOR_PRESETS: [usize; 5] = [16, 32, 64, 128, 256];
 
 /// Ordered-dither selection, front-end-agnostic (CLI/GUI map their own enums onto this).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,7 +190,7 @@ impl Default for Config {
             dither_strength: 0.35,
             scale: 1,
             alpha_threshold: 128,
-            cell: CellMode::Detail,
+            cell: CellMode::Smart,
             dominant_threshold: DEFAULT_DOMINANT_THRESHOLD,
             adaptive_iterations: DEFAULT_ADAPTIVE_ITERATIONS,
             highlight_collapse: DEFAULT_HIGHLIGHT_COLLAPSE,
@@ -215,6 +214,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The Auto preset, shared by the GUI's initial state, the README quick
+    /// start and the evaluation harness: infer the pixel grid and the
+    /// palette, reduce cells with `CellMode::Smart`. Everything else default.
+    pub fn auto() -> Self {
+        Self {
+            auto_pixel_size: true,
+            auto_colors: true,
+            cell: CellMode::Smart,
+            ..Self::default()
+        }
+    }
+
     /// Front-end-agnostic validation (clap already enforces the CLI's own messages).
     pub fn validate(&self) -> Result<(), String> {
         if self.crop.is_some_and(|c| c.width == 0 || c.height == 0) {
@@ -286,6 +297,9 @@ pub struct ConvertResult {
     pub phase_confidence: Option<f32>,
     /// What auto pixel size concluded (None when it did not run).
     pub auto_grid: Option<AutoGrid>,
+    /// Neighbour mixing (x, y) that `CellMode::Smart` measured and removed;
+    /// (0, 0) for a sharp source. None for other cell modes.
+    pub cell_leak: Option<(f32, f32)>,
     /// The color count `auto_colors` chose (adaptive palettes only).
     pub auto_colors: Option<usize>,
     /// Source pixels made transparent by the alpha pre-pass.
@@ -326,7 +340,7 @@ impl ConvertResult {
                 "  \"outWidth\": {}, \"outHeight\": {},\n",
                 "  \"requestedPixelSize\": {}, \"detectedPixelSize\": {},\n",
                 "  \"snapGrid\": {}, \"gridPhaseX\": {}, \"gridPhaseY\": {}, \"phaseConfidence\": {},\n",
-                "  \"autoGrid\": {},\n",
+                "  \"autoGrid\": {}, \"cellLeakX\": {}, \"cellLeakY\": {},\n",
                 "  \"paletteLen\": {}, \"autoColors\": {},\n",
                 "  \"cellMode\": \"{:?}\", \"adaptiveIterations\": {}, \"adaptiveFallback\": {},\n",
                 "  \"alphaMode\": \"{:?}\", \"alphaRemoved\": {},\n",
@@ -353,6 +367,8 @@ impl ConvertResult {
             opt_f32(self.phase_confidence),
             self.auto_grid
                 .map_or("null".into(), |g| format!("\"{g:?}\"")),
+            opt_f32(self.cell_leak.map(|l| l.0)),
+            opt_f32(self.cell_leak.map(|l| l.1)),
             self.palette_len,
             opt_usize(self.auto_colors),
             cfg.cell,
@@ -439,7 +455,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
             sampling.cell_h,
             cfg.adaptive_iterations,
         );
-    let small = downsample_grid_opts(
+    let mut small = downsample_grid_opts(
         &linear,
         src_w as usize,
         src_h as usize,
@@ -453,14 +469,21 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         },
     );
 
-    let auto_colors = if cfg.auto_colors && matches!(cfg.palette, PaletteChoice::Adaptive) {
-        Some(auto_color_count(&small, cfg.alpha_threshold as f32 / 255.0))
-    } else {
-        None
-    };
+    // Smart cells are a reconstruction of the art pixels, so they also undo
+    // the neighbour mixing a blurred or resampled source carries.
+    let cell_leak = (cfg.cell == CellMode::Smart).then(|| {
+        deblur::deblur_cells(
+            &mut small,
+            grid.out_w as usize,
+            grid.out_h as usize,
+            cfg.alpha_threshold as f32 / 255.0,
+        )
+    });
+    let infer_palette = cfg.auto_colors && matches!(cfg.palette, PaletteChoice::Adaptive);
 
     let options = QuantizeOptions {
-        colors: auto_colors.unwrap_or(cfg.colors),
+        colors: cfg.colors,
+        infer_palette,
         alpha_threshold: cfg.alpha_threshold,
         fixed_palette: fixed_palette.as_deref(),
         dither: cfg.dither,
@@ -471,6 +494,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         palette_merge: cfg.palette_merge,
     };
     let (mut pixel_art, palette) = quantize_to_rgba8(&small, grid.out_w, grid.out_h, options);
+    let auto_colors = infer_palette.then_some(palette.len());
     let cleanup = morphology::cleanup(&mut pixel_art, cfg.cleanup, cfg.protect_details);
     let outline = apply_outline(&mut pixel_art, cfg.outline);
     let palette_len = palette.len();
@@ -497,6 +521,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         grid_phase: grid.phase,
         phase_confidence: grid.phase_confidence,
         auto_grid: grid.auto,
+        cell_leak: cell_leak.map(|l| (l.x, l.y)),
         auto_colors,
         alpha_removed,
         cleanup,
@@ -531,36 +556,6 @@ fn check_output_size(
         ));
     }
     Ok(())
-}
-
-/// Estimate a good adaptive palette size from the downsampled grid: count
-/// significant coarse RGB buckets (4 bits/channel) among opaque pixels, then
-/// snap up to the nearest preset in `AUTO_COLOR_PRESETS`.
-fn auto_color_count(linear_rgba: &[f32], alpha_threshold: f32) -> usize {
-    let mut counts: std::collections::HashMap<u16, u32> = std::collections::HashMap::new();
-    let mut total = 0u32;
-    for px in linear_rgba.chunks_exact(4) {
-        if px[3] < alpha_threshold {
-            continue;
-        }
-        total += 1;
-        let key = ((linear_to_srgb(px[0]) >> 4) as u16) << 8
-            | ((linear_to_srgb(px[1]) >> 4) as u16) << 4
-            | (linear_to_srgb(px[2]) >> 4) as u16;
-        *counts.entry(key).or_insert(0) += 1;
-    }
-    if total == 0 {
-        return AUTO_COLOR_PRESETS[0];
-    }
-    // A bucket is significant at >= 0.1% of opaque pixels (always >= 1 px).
-    let min_count = ((total as f64) * 0.001).ceil().max(1.0) as u32;
-    let significant = counts.values().filter(|&&c| c >= min_count).count();
-    for preset in AUTO_COLOR_PRESETS {
-        if significant <= preset {
-            return preset;
-        }
-    }
-    AUTO_COLOR_PRESETS[AUTO_COLOR_PRESETS.len() - 1]
 }
 
 /// Draw the sampling grid the current config would use over a copy of the
@@ -971,6 +966,9 @@ fn rgba8_to_linear(src: &RgbaImage) -> Vec<f32> {
 #[derive(Clone, Copy)]
 struct QuantizeOptions<'a> {
     colors: usize,
+    /// Infer the palette (size and content) from the grid; ignores `colors`,
+    /// `quantizer`, `palette_merge` and the highlight/shadow collapse.
+    infer_palette: bool,
     alpha_threshold: u8,
     fixed_palette: Option<&'a [[f32; 3]]>,
     dither: Dither,
@@ -988,6 +986,9 @@ fn quantize_to_rgba8(
     options: QuantizeOptions<'_>,
 ) -> (RgbaImage, Vec<[u8; 3]>) {
     let threshold = options.alpha_threshold as f32 / 255.0;
+    if options.infer_palette && options.fixed_palette.is_none() {
+        return quantize_inferred(linear_rgba, width, height, options);
+    }
     let adaptive_palette = options.fixed_palette.is_none();
     let cleanup = PaletteCleanup {
         highlight: options.highlight_collapse.clamp(0.0, 1.0),
@@ -1072,6 +1073,67 @@ fn quantize_to_rgba8(
         *dst = Rgba([r, g, b, 255]);
     }
 
+    (out, palette_srgb)
+}
+
+/// Auto colours: infer the palette from the cells (`artpalette`), then give
+/// every cell its nearest entry. No highlight/shadow collapse: the inferred
+/// palette already has one entry per intended colour, and dark ramps stay.
+fn quantize_inferred(
+    linear_rgba: &[f32],
+    width: u32,
+    height: u32,
+    options: QuantizeOptions<'_>,
+) -> (RgbaImage, Vec<[u8; 3]>) {
+    let threshold = options.alpha_threshold as f32 / 255.0;
+    let cells: Vec<Option<[u8; 3]>> = linear_rgba
+        .chunks_exact(4)
+        .map(|px| {
+            (px[3] >= threshold).then(|| {
+                [
+                    linear_to_srgb(px[0]),
+                    linear_to_srgb(px[1]),
+                    linear_to_srgb(px[2]),
+                ]
+            })
+        })
+        .collect();
+    let inferred = artpalette::infer(&cells, width as usize, artpalette::EXACT_MAX_COLORS);
+    let palette_srgb = inferred.colors;
+    if palette_srgb.is_empty() {
+        return (RgbaImage::new(width, height), Vec::new());
+    }
+    let palette: Vec<[f32; 3]> = palette_srgb
+        .iter()
+        .map(|c| srgb8_to_oklab(c[0], c[1], c[2]))
+        .collect();
+    let labs: Vec<[f32; 3]> = cells
+        .iter()
+        .map(|c| c.map_or([0.0; 3], |c| srgb8_to_oklab(c[0], c[1], c[2])))
+        .collect();
+    let dithered = match options.dither {
+        Dither::None => None,
+        Dither::Bayer4 | Dither::Bayer8 => Some(ordered_dither(
+            &labs,
+            width as usize,
+            &palette,
+            options.dither_strength,
+            0.08,
+            options.dither == Dither::Bayer8,
+        )),
+    };
+    let mut out = RgbaImage::new(width, height);
+    for (i, dst) in out.pixels_mut().enumerate() {
+        if cells[i].is_none() {
+            continue;
+        }
+        let idx = dithered
+            .as_ref()
+            .map(|indices| indices[i] as usize)
+            .unwrap_or_else(|| nearest(&palette, labs[i]));
+        let [r, g, b] = palette_srgb[idx];
+        *dst = Rgba([r, g, b, 255]);
+    }
     (out, palette_srgb)
 }
 
@@ -1852,8 +1914,8 @@ mod tests {
             ..cfg()
         };
         let r = convert(&img, &config).unwrap();
-        assert_eq!(r.auto_colors, Some(16));
-        assert!(r.palette_len <= 16);
+        assert_eq!(r.auto_colors, Some(4));
+        assert_eq!(r.palette_len, 4);
     }
 
     #[test]
@@ -1870,10 +1932,10 @@ mod tests {
         let r = convert(&img, &config).unwrap();
         let chosen = r.auto_colors.unwrap();
         assert!(
-            chosen >= 128,
-            "gradient should demand many colors, got {chosen}"
+            (16..=artpalette::AUTO_MAX_COLORS).contains(&chosen),
+            "a gradient needs many colours but stays within the Auto cap, got {chosen}"
         );
-        assert!(AUTO_COLOR_PRESETS.contains(&chosen));
+        assert_eq!(r.palette_len, chosen);
     }
 
     #[test]

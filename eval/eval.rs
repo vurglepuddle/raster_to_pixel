@@ -207,39 +207,12 @@ fn parse_palette(j: &J) -> Vec<[u8; 3]> {
         .collect()
 }
 fn auto_config() -> Config {
-    // GUI initial state at gui/index.html:338 and README quick start. Pin all
-    // quality-affecting settings so a future Config::default change is visible.
+    // The library's Auto preset (GUI initial state, README quick start). Until
+    // engine v2 this function pinned the old defaults by hand; the baseline
+    // label was produced with those (detail cells, k-means, bucket-count colours).
     Config {
-        auto_pixel_size: true,
-        auto_colors: true,
-        size: 64,
-        pixel_size: None,
-        snap_grid: true,
-        colors: 16,
-        palette: PaletteChoice::Adaptive,
-        cell: raster_to_pixel::downsample::CellMode::Detail,
-        dominant_threshold: 0.25,
-        adaptive_iterations: 3,
-        highlight_collapse: 0.03,
-        shadow_collapse: 0.16,
-        dither: pipeline::Dither::None,
-        dither_strength: 0.35,
-        scale: 1,
-        alpha_threshold: 128,
-        alpha_mode: raster_to_pixel::alpha::AlphaMode::Preserve,
-        bg_tolerance: 0.10,
-        color_key: None,
-        cleanup: raster_to_pixel::morphology::CleanupPreset::None,
-        protect_details: true,
-        phase_x: None,
-        phase_y: None,
-        quantizer: pipeline::Quantizer::KMeans,
-        palette_merge: 0.,
-        contrast_expansion: 0,
-        outline: raster_to_pixel::outline::OutlineMode::None,
-        crop: None,
-        compare: false,
         max_output_pixels: Some(20_000_000),
+        ..Config::auto()
     }
 }
 fn config_json(c: &Config) -> J {

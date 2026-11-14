@@ -8,8 +8,10 @@
 //! results identical across platforms. See PLAN.md (algorithms) and GUI_PLAN.md (GUI).
 
 pub mod alpha;
+pub mod artpalette;
 pub mod api;
 pub mod color;
+pub mod deblur;
 pub mod dither;
 pub mod downsample;
 pub mod enhance;

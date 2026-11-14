@@ -342,7 +342,7 @@ const state = {
   sizeMode: 'auto', size: 64, pixelSize: 6, snapGrid: true,
   colors: 16, palette: 'adaptive', customHex: '', autoColors: true,
   highlightCollapse: 0.03, shadowCollapse: 0.16,
-  cell: 'detail', dominantThreshold: 0.25, adaptiveIterations: 3, adaptiveFallback: false,
+  cell: 'smart', dominantThreshold: 0.25, adaptiveIterations: 3, adaptiveFallback: false,
   dither: 'none', ditherStrength: 0.35, alphaThreshold: 128,
   alphaMode: 'preserve', bgTolerance: 0.10, keyColor: '#00ff00',
   cleanup: 'none', protectDetails: true, outline: 'none',
@@ -371,7 +371,7 @@ function segActive(container, active) {
 }
 
 buildSeg($('sizeModeGrp'), [['auto','Auto'],['pixel','Pixel'],['size','Fixed']], 'seg-join', v => set({ sizeMode: v }));
-buildSeg($('cellGrp'), [['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant'],['adaptive','Adapt']], 'seg-join', v => set({ cell: v }));
+buildSeg($('cellGrp'), [['smart','Smart'],['box','Box'],['median','Median'],['detail','Detail'],['dominant','Dominant'],['adaptive','Adapt']], 'seg-join', v => set({ cell: v }));
 buildSeg($('ditherGrp'), [['none','None'],['bayer4','Bayer 4'],['bayer8','Bayer 8']], 'seg-join', v => set({ dither: v }));
 buildSeg($('alphaModeGrp'), [['preserve','Keep'],['binary','Binary'],['bgfill','BG Fill'],['key','Key']], 'seg-join', v => set({ alphaMode: v }));
 buildSeg($('cleanupGrp'), [['none','Off'],['conservative','Cons'],['balanced','Bal'],['aggressive','Aggr']], 'seg-join', v => set({ cleanup: v }));

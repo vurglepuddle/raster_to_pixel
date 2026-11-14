@@ -214,12 +214,13 @@ fn config_from_form(f: &HashMap<String, String>, preview: bool) -> Result<Config
         "custom" => PaletteChoice::HexList(get("customHex").unwrap_or("").to_string()),
         name => PaletteChoice::Builtin(name.to_string()),
     };
-    let cell = match get("cell").unwrap_or("detail") {
+    let cell = match get("cell").unwrap_or("smart") {
         "box" => CellMode::Box,
         "median" => CellMode::Median,
         "dominant" => CellMode::Dominant,
         "adaptive" => CellMode::Adaptive,
-        _ => CellMode::Detail,
+        "detail" => CellMode::Detail,
+        _ => CellMode::Smart,
     };
     let dither = match get("dither").unwrap_or("none") {
         "bayer4" => Dither::Bayer4,

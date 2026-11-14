@@ -76,7 +76,7 @@ struct Args {
     alpha_threshold: u8,
 
     /// Cell reduction mode used during downsampling.
-    #[arg(long, value_enum, default_value_t = CellModeArg::Detail)]
+    #[arg(long, value_enum, default_value_t = CellModeArg::Smart)]
     cell: CellModeArg,
 
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
@@ -167,6 +167,7 @@ enum CellModeArg {
     Detail,
     Dominant,
     Adaptive,
+    Smart,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -264,6 +265,7 @@ impl From<CellModeArg> for CellMode {
             CellModeArg::Detail => CellMode::Detail,
             CellModeArg::Dominant => CellMode::Dominant,
             CellModeArg::Adaptive => CellMode::Adaptive,
+            CellModeArg::Smart => CellMode::Smart,
         }
     }
 }
