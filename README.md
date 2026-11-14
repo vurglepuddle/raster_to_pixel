@@ -38,7 +38,7 @@ For most images, start with auto grid and auto colors:
 
 Auto finds the pixel grid and infers the palette. Smart cells reconstruct the
 colors and undo blur, while the elastic grid follows nearby off-grid edges.
-In the GUI, the elastic grid is the **Follow off-grid edges** checkbox;
+In the GUI, the elastic grid is the **Elastic grid** checkbox;
 use `--no-elastic` in the CLI to turn it off.
 
 ```cmd

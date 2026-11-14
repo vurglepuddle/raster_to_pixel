@@ -265,7 +265,7 @@
 
       <div class="sec">Downsampling</div>
       <div class="segwrap" id="cellGrp"></div>
-      <label class="row nb checkrow" id="rowElastic" title="Smart cells only. Cell boundaries follow nearby edges: recovers lettering, thin outlines and ornaments drawn off the pixel grid."><span class="lbl">Follow off-grid edges</span><input type="checkbox" id="inElastic"></label>
+      <label class="row nb checkrow" id="rowElastic" title="Elastic grid (Smart cells only): cell boundaries bend to follow nearby edges drawn off the pixel grid. Recovers lettering, thin outlines and small ornaments. Turn off if an image looks distorted."><span class="lbl">Elastic grid</span><input type="checkbox" id="inElastic"></label>
       <div class="row nb" id="rowDominance" style="padding-top:10px;"><span class="lbl">Dominance</span>
         <input type="range" min="0" max="1" step="0.05" id="inDominance"><span class="val" id="dominanceVal">0.25</span></div>
       <div class="row nb" id="rowAdaptIter" title="EM refinement passes for the Adapt cell mode. More is slower and sharper."><span class="lbl">Iterations</span>

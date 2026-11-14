@@ -82,7 +82,7 @@ struct Args {
     cell: CellModeArg,
 
     /// Disable the elastic grid. Smart cells follow nearby off-grid edges
-    /// by default when a grid is found (GUI: "Follow off-grid edges").
+    /// by default when a grid is found (GUI: "Elastic grid").
     #[arg(long)]
     no_elastic: bool,
 
