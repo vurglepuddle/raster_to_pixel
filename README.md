@@ -40,9 +40,12 @@ settings, then cropped on whole output pixels and enlarged without smoothing.
 - **v1** is the original engine.
 - **v2** finds the pixel grid with a lattice detector, rebuilds each cell's colors with
   Smart cells (including deblur), and infers the palette.
-- **v3** adds the elastic grid and keeps small, distinct colors in busy scenes.
+- **v3** adds the elastic grid: cell edges bend to follow lines drawn slightly off the
+  pixel grid, which saves thin outlines, lettering and small ornaments. It also keeps
+  small, distinct colors in busy scenes. If an image looks distorted, turn off
+  **Elastic grid** in the GUI or pass `--no-elastic`.
 
-Thin outlines: v3 follows lines drawn slightly off the pixel grid.
+Thin outlines: the elastic grid keeps the scarab's one-pixel legs and outline.
 
 ![Scarab closeup: source, v1, v2, v3](screenshots/compare_scarab.png)
 
