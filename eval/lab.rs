@@ -11,7 +11,7 @@
 mod json;
 
 use raster_to_pixel::{
-    grid::{detect, GridDecision},
+    grid::{detect, overfull_share, turn_counts, GridDecision},
     image_io,
 };
 use std::{collections::BTreeMap, fs, path::Path};
@@ -20,7 +20,62 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("grid") => grid(&args[1..]),
+        Some("turns") => turns(&args[1..]),
         _ => eprintln!("usage: lab grid [--all] [--verbose] [FILTER]"),
+    }
+}
+
+/// Overfull scan lines of the true lattice and of a wrongly detected one.
+fn turns(args: &[String]) {
+    let filter = args.first().cloned().unwrap_or_default();
+    let corpus = json::parse(&fs::read_to_string("eval_out/corpus.json").expect("corpus.json"))
+        .expect("corpus json");
+    let mut worst_true: BTreeMap<String, f64> = BTreeMap::new();
+    for case in corpus.get("cases").a() {
+        let id = case.get("id").s();
+        if !id.contains(&filter) || case.get("split").s() != "dev" {
+            continue;
+        }
+        let img = image_io::load_rgba_from_path(Path::new(case.get("source").s())).expect("load");
+        let truth = (
+            case.get("truth_w").n().unwrap() as u32,
+            case.get("truth_h").n().unwrap() as u32,
+        );
+        let (rows, cols) = turn_counts(&img);
+        let share = |c: u32, r: u32| overfull_share(&rows, c as f64).max(overfull_share(&cols, r as f64));
+        let t = share(truth.0, truth.1);
+        let entry = worst_true.entry(case.get("variant").s().to_string()).or_default();
+        *entry = entry.max(t);
+        if let GridDecision::Lattice(fit) = detect(&img) {
+            if (fit.cols, fit.rows) != truth {
+                println!(
+                    "WRONG {:52} true {:?} {:.3} | got {}x{} pitch {:.1} {:.3}",
+                    &id[..id.len().min(52)],
+                    truth,
+                    t,
+                    fit.cols,
+                    fit.rows,
+                    fit.pitch_x,
+                    share(fit.cols, fit.rows)
+                );
+            }
+        }
+    }
+    for (variant, t) in &worst_true {
+        println!("{variant:34} worst true-lattice overfull share {t:.3}");
+    }
+    for line in fs::read_to_string("eval/real_manifest.txt").unwrap_or_default().lines() {
+        let Some(path) = line.split_whitespace().next().filter(|p| !p.starts_with('#')) else {
+            continue;
+        };
+        let Ok(img) = image_io::load_rgba_from_path(Path::new(path)) else {
+            continue;
+        };
+        if let GridDecision::Lattice(fit) = detect(&img) {
+            let (rows, cols) = turn_counts(&img);
+            let s = overfull_share(&rows, fit.cols as f64).max(overfull_share(&cols, fit.rows as f64));
+            println!("{path:44} {}x{} overfull {s:.3}", fit.cols, fit.rows);
+        }
     }
 }
 

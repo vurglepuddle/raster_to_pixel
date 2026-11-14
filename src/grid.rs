@@ -246,6 +246,101 @@ fn axis_profiles(src: &RgbaImage) -> (AxisProfile, AxisProfile) {
     (px, py)
 }
 
+/// A turn of a scan line (a local maximum or minimum of its brightness) counts
+/// when the line swings back from it by at least this much (sum of the
+/// premultiplied R, G, B and alpha steps), or by `TURN_SHARE` of the line's
+/// whole range if that is more: blur, ringing and noise stay below it.
+const TURN_SWING: i32 = 24;
+const TURN_SHARE: f64 = 0.15;
+
+/// Turns of one scan line: how many times its brightness reverses direction.
+/// Every turn is a feature that needs a cell of its own, so a line cannot
+/// have more turns than the lattice has cells along it.
+fn line_turns(buf: &[u8], start: usize, stride: usize, len: usize, values: &mut Vec<i32>) -> u32 {
+    values.clear();
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    for i in 0..len {
+        let p = &buf[start + i * stride..start + i * stride + 4];
+        let v = p[0] as i32 + p[1] as i32 + p[2] as i32 + p[3] as i32;
+        lo = lo.min(v);
+        hi = hi.max(v);
+        values.push(v);
+    }
+    let swing = TURN_SWING.max(((hi - lo) as f64 * TURN_SHARE) as i32);
+    // `dir`: 0 until the line has moved by `swing`, then +1 rising, -1 falling.
+    let (mut dir, mut turns) = (0i32, 0u32);
+    let (mut min, mut max) = (values[0], values[0]);
+    for &v in values.iter() {
+        match dir {
+            0 => {
+                min = min.min(v);
+                max = max.max(v);
+                if max - min >= swing {
+                    dir = if v == max { 1 } else { -1 };
+                }
+            }
+            1 => {
+                if v > max {
+                    max = v;
+                } else if max - v >= swing {
+                    turns += 1;
+                    dir = -1;
+                    min = v;
+                }
+            }
+            _ => {
+                if v < min {
+                    min = v;
+                } else if v - min >= swing {
+                    turns += 1;
+                    dir = 1;
+                    max = v;
+                }
+            }
+        }
+    }
+    turns
+}
+
+/// Turn counts of every row and of every column of `src`.
+pub fn turn_counts(src: &RgbaImage) -> (Vec<u32>, Vec<u32>) {
+    let (w, h) = (src.width() as usize, src.height() as usize);
+    let buf = premultiplied(src);
+    let mut values = Vec::new();
+    let rows = (0..h)
+        .map(|y| line_turns(&buf, y * w * 4, 4, w, &mut values))
+        .collect();
+    let cols = (0..w)
+        .map(|x| line_turns(&buf, x * 4, w * 4, h, &mut values))
+        .collect();
+    (rows, cols)
+}
+
+/// At most this share of the scan lines may have more turns than the lattice
+/// has cells along them (JPEG ringing overfills up to 3% of the lines of a
+/// true lattice; the layout period of a sprite sheet overfills 40% and more).
+const MAX_OVERFULL_LINES: f64 = 0.1;
+
+/// Fewest cells a lattice may have along lines with these turn counts.
+fn min_cells(turns: &[u32]) -> f64 {
+    if turns.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = turns.to_vec();
+    sorted.sort_unstable();
+    let keep = ((1.0 - MAX_OVERFULL_LINES) * sorted.len() as f64).ceil() as usize;
+    sorted[keep.clamp(1, sorted.len()) - 1] as f64
+}
+
+/// Share of the scan lines that have more turns than `cells`.
+pub fn overfull_share(turns: &[u32], cells: f64) -> f64 {
+    if turns.is_empty() {
+        return 0.0;
+    }
+    let over = turns.iter().filter(|&&t| t as f64 > cells).count();
+    over as f64 / turns.len() as f64
+}
+
 /// `|FFT| / sum` of a zero-padded profile, plus its no-lattice floor.
 fn coherence_spectrum(profile: &[f64], n_fft: usize) -> Option<(Vec<f64>, f64)> {
     let total: f64 = profile.iter().sum();
@@ -378,7 +473,18 @@ pub fn detect(src: &RgbaImage) -> GridDecision {
         significance: significance as f32,
     };
     let (w, h) = (src.width() as usize, src.height() as usize);
-    let max_pitch = MAX_PITCH.min(w.min(h) as f64 / MIN_PERIODS);
+    let mut max_pitch = MAX_PITCH.min(w.min(h) as f64 / MIN_PERIODS);
+    // A cell holds one colour, so the lattice needs at least as many cells
+    // along a line as the line has features. This rules out the coarse
+    // periods a sprite sheet or tile set has on top of its pixel grid, which
+    // are all that is left to find once blur has erased the grid itself.
+    let (row_turns, col_turns) = turn_counts(src);
+    for (len, turns) in [(w, &row_turns), (h, &col_turns)] {
+        let cells = min_cells(turns);
+        if cells > 0.0 {
+            max_pitch = max_pitch.min(len as f64 / cells);
+        }
+    }
     if max_pitch < 2.0 {
         return none(0.0, 0.0);
     }
