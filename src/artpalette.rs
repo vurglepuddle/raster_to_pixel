@@ -47,7 +47,10 @@ const MIN_NOISE_PAIRS: usize = 8;
 const CANDIDATE_BANDWIDTH_PER_NOISE: f32 = 1.2;
 const CANDIDATE_BANDWIDTH_MIN: f32 = 0.015;
 const CANDIDATE_BANDWIDTH: f32 = 0.015;
-/// More candidates than this make the pairwise tests slow; widen first.
+/// More candidates than this make the pairwise tests slow; the lightest are
+/// folded into their nearest neighbours first. (Widening the bandwidth
+/// instead swallows small distinct hues whole: a busy scene lost its teal
+/// foliage to the olive next to it that way.)
 const MAX_CANDIDATES: usize = 160;
 /// Candidates whose cells are fully intermixed merge up to this distance.
 const MIXED_MERGE_DIST: f32 = 0.04;
@@ -125,13 +128,10 @@ pub fn infer(cells: &[Option<[u8; 3]>], width: usize, max_colors: usize) -> ArtP
     }
 
     let limit = max_colors.min(AUTO_MAX_COLORS);
-    let mut bandwidth = (noise * CANDIDATE_BANDWIDTH_PER_NOISE)
+    let bandwidth = (noise * CANDIDATE_BANDWIDTH_PER_NOISE)
         .clamp(CANDIDATE_BANDWIDTH_MIN, CANDIDATE_BANDWIDTH);
     let mut clusters = modes(&distinct, bandwidth);
-    while clusters.len() > MAX_CANDIDATES {
-        bandwidth *= 1.25;
-        clusters = modes(&distinct, bandwidth);
-    }
+    fold_lightest(&mut clusters, MAX_CANDIDATES);
     let mut adjacency = label_adjacency(cells, width, &distinct, &clusters);
     let segregated = (noise * SEGREGATED_MERGE_PER_NOISE)
         .clamp(SEGREGATED_MERGE_MIN, SEGREGATED_MERGE_MAX);
@@ -211,11 +211,20 @@ fn fold(clusters: &mut Vec<Cluster>, adjacency: &mut Vec<Vec<f32>>, a: usize, b:
     clusters[a].absorb(other);
 }
 
+/// Area (cells) from which a colour is fully visible: past it a larger area
+/// does not make a colour error any worse to look at.
+const VISIBLE_AREA_CELLS: f32 = 16.0;
+
 /// The palette is over the cap: merge the pair whose loss is least visible.
-/// That is the smallest area-weighted colour change (Ward's criterion), so
-/// rare neighbouring shades go before subtle differences between large
-/// regions; pairs farther apart than `ACCENT_DIST` (salient accents) are only
-/// touched when nothing else is left.
+/// That is the smallest colour change weighted by the area it happens on
+/// (Ward's criterion), with the area counted only up to
+/// `VISIBLE_AREA_CELLS`: a few stray cells are cheap to recolour, but among
+/// visible areas it is the closest pair of colours that goes, however large
+/// they are. Squared error over all cells would instead thin out the hues
+/// (a small teal patch costs less than two large greens a step apart) and
+/// keep every shade of the dominant ramp. Pairs farther apart than
+/// `ACCENT_DIST` (salient accents) are only touched when nothing else is
+/// left.
 fn merge_cheapest(clusters: &mut Vec<Cluster>, adjacency: &mut Vec<Vec<f32>>) {
     let means: Vec<[f32; 3]> = clusters.iter().map(Cluster::mean).collect();
     let accent2 = ACCENT_DIST * ACCENT_DIST;
@@ -224,7 +233,7 @@ fn merge_cheapest(clusters: &mut Vec<Cluster>, adjacency: &mut Vec<Vec<f32>>) {
         for b in a + 1..clusters.len() {
             let d2 = oklab_dist2(means[a], means[b]);
             let (wa, wb) = (clusters[a].weight, clusters[b].weight);
-            let cost = wa * wb / (wa + wb) * d2;
+            let cost = (wa * wb / (wa + wb)).min(VISIBLE_AREA_CELLS) * d2;
             let accent = d2 >= accent2;
             let better = match best {
                 None => true,
@@ -239,6 +248,31 @@ fn merge_cheapest(clusters: &mut Vec<Cluster>, adjacency: &mut Vec<Vec<f32>>) {
     }
     if let Some((a, b, _, _)) = best {
         fold(clusters, adjacency, a, b);
+    }
+}
+
+/// Fold the lightest cluster into its nearest neighbour until at most
+/// `limit` remain (ties: the earlier cluster).
+fn fold_lightest(clusters: &mut Vec<Cluster>, limit: usize) {
+    while clusters.len() > limit.max(1) {
+        let mut light = 0;
+        for (i, c) in clusters.iter().enumerate() {
+            if c.weight < clusters[light].weight {
+                light = i;
+            }
+        }
+        let mean = clusters[light].mean();
+        let mut near = (usize::MAX, f32::INFINITY);
+        for (i, c) in clusters.iter().enumerate() {
+            let d = oklab_dist2(mean, c.mean());
+            if i != light && d < near.1 {
+                near = (i, d);
+            }
+        }
+        let removed = clusters.swap_remove(light);
+        // `swap_remove` moved the last cluster into `light`.
+        let target = if near.0 == clusters.len() { light } else { near.0 };
+        clusters[target].absorb(removed);
     }
 }
 
