@@ -251,6 +251,14 @@ Goal: help with the last annoying artifacts without making the default destructi
 - GUI does not expose `--phase-x`/`--phase-y` yet (the server already parses
   `phaseX`/`phaseY` form fields).
 
+## Later
+
+- Mobile version improvements (web UI on phones).
+- flowers_white_5: grid is wrong. True pitch is 5 px, v3 does not lock it (owner sees ~7),
+  and the elastic grid makes this image worse.
+- Region-level palette assignment (pumpkin stone shades), elastic second pass, local elastic
+  gate for the 1-2 images where elastic makes things worse (see FABLE_LAB.md "Next").
+
 ## Next Best Step
 
 Field-test the batch pass on real generated images: background-fill tolerances,

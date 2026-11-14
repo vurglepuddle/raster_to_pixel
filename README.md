@@ -32,6 +32,28 @@ so a smaller region reduces processing work; the full file is still decoded on l
 
 ![Pixeline GUI in light mode](screenshots/light_mode.png)
 
+## v1, v2 and v3
+
+Closeups from three test images. Each image was converted whole with the default Auto
+settings, then cropped on whole output pixels and enlarged without smoothing.
+
+- **v1** is the original engine.
+- **v2** finds the pixel grid with a lattice detector, rebuilds each cell's colors with
+  Smart cells (including deblur), and infers the palette.
+- **v3** adds the elastic grid and keeps small, distinct colors in busy scenes.
+
+Thin outlines: v3 follows lines drawn slightly off the pixel grid.
+
+![Scarab closeup: source, v1, v2, v3](screenshots/compare_scarab.png)
+
+Vines: v1 picks a 5 px grid; v2 and v3 find the real 3.58 px one.
+
+![Pumpkin closeup: source, v1, v2, v3](screenshots/compare_pumpkin.png)
+
+Soft lettering:
+
+![Lettering closeup: source, v1, v2, v3](screenshots/compare_fuzzy.png)
+
 ## Quick Start
 
 For most images, start with auto grid and auto colors:
