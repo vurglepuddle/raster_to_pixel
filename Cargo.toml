@@ -21,3 +21,8 @@ path = "web-wasm/tests/parity_native.rs"
 [[example]]
 name = "eval"
 path = "eval/eval.rs"
+
+# Development probes for engine work (grid inference over the corpus, etc.).
+[[example]]
+name = "lab"
+path = "eval/lab.rs"

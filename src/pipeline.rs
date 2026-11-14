@@ -21,12 +21,26 @@ use crate::{
         DEFAULT_ADAPTIVE_ITERATIONS, DEFAULT_DOMINANT_THRESHOLD, MAX_ADAPTIVE_ITERATIONS,
     },
     enhance::expand_contrast,
+    grid::{self, GridDecision},
     kmeans::{build_palette, merge_close_entries, nearest},
     morphology::{self, CleanupPreset, CleanupStats},
     outline::{apply_outline, OutlineMode, OutlineStats},
     palettes,
     wu::build_palette_wu,
 };
+
+/// What auto pixel size concluded about the source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoGrid {
+    /// A pixel grid was found; the output has its resolution.
+    Lattice,
+    /// No grid, and the source already looks like native-resolution pixel
+    /// art (small, or few colours): kept 1:1.
+    Native,
+    /// No grid in a large continuous-tone source: reduced to about
+    /// `NO_GRID_TARGET_LONG_SIDE` art pixels on the long side.
+    Reduced,
+}
 
 /// Adaptive palette construction algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,7 +282,10 @@ pub struct ConvertResult {
     pub detected_pixel_size: Option<f64>,
     pub grid_phase: Option<(u32, u32)>,
     /// Snap-grid phase confidence in 0..=1 (1 = all edge energy on one phase).
+    /// With auto pixel size this is the coherence of the best lattice.
     pub phase_confidence: Option<f32>,
+    /// What auto pixel size concluded (None when it did not run).
+    pub auto_grid: Option<AutoGrid>,
     /// The color count `auto_colors` chose (adaptive palettes only).
     pub auto_colors: Option<usize>,
     /// Source pixels made transparent by the alpha pre-pass.
@@ -309,6 +326,7 @@ impl ConvertResult {
                 "  \"outWidth\": {}, \"outHeight\": {},\n",
                 "  \"requestedPixelSize\": {}, \"detectedPixelSize\": {},\n",
                 "  \"snapGrid\": {}, \"gridPhaseX\": {}, \"gridPhaseY\": {}, \"phaseConfidence\": {},\n",
+                "  \"autoGrid\": {},\n",
                 "  \"paletteLen\": {}, \"autoColors\": {},\n",
                 "  \"cellMode\": \"{:?}\", \"adaptiveIterations\": {}, \"adaptiveFallback\": {},\n",
                 "  \"alphaMode\": \"{:?}\", \"alphaRemoved\": {},\n",
@@ -333,6 +351,8 @@ impl ConvertResult {
             phase_x,
             phase_y,
             opt_f32(self.phase_confidence),
+            self.auto_grid
+                .map_or("null".into(), |g| format!("\"{g:?}\"")),
             self.palette_len,
             opt_usize(self.auto_colors),
             cfg.cell,
@@ -361,7 +381,7 @@ impl ConvertResult {
 /// Estimate source-pixels-per-output-pixel from image structure, for the GUI to show
 /// at upload time (mirrors what `auto_pixel_size` uses internally).
 pub fn detect_pixel_size_of(src: &RgbaImage) -> Option<f64> {
-    detect_pixel_size(src)
+    auto_grid_plan(src).detected_pixel_size
 }
 
 /// Run the full pipeline: source RGBA → deliberate pixel-art RGBA.
@@ -476,6 +496,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         detected_pixel_size: grid.detected_pixel_size,
         grid_phase: grid.phase,
         phase_confidence: grid.phase_confidence,
+        auto_grid: grid.auto,
         auto_colors,
         alpha_removed,
         cleanup,
@@ -643,6 +664,77 @@ pub(crate) struct GridPlan {
     pub phase: Option<(u32, u32)>,
     pub phase_confidence: Option<f32>,
     pub sampling: Option<SamplingGrid>,
+    /// What auto pixel size concluded (None when it did not run).
+    pub auto: Option<AutoGrid>,
+}
+
+/// Long side (art pixels) of the reduction used when a large source has no
+/// pixel grid at all.
+pub const NO_GRID_TARGET_LONG_SIDE: u32 = 192;
+/// Sources up to this long side with no detectable grid are taken to be pixel
+/// art already at its native resolution.
+const NO_GRID_NATIVE_LONG_SIDE: u32 = 400;
+/// So are larger sources with at most this many distinct opaque colours.
+const NO_GRID_NATIVE_MAX_COLORS: usize = 256;
+
+/// Grid inference for auto pixel size: follow the lattice when the source has
+/// one; otherwise say so and either keep the source 1:1 (it already is pixel
+/// art) or reduce it to a fixed, modest resolution (it is continuous-tone).
+pub(crate) fn auto_grid_plan(src: &RgbaImage) -> GridPlan {
+    let (src_w, src_h) = src.dimensions();
+    match grid::detect(src) {
+        GridDecision::Lattice(fit) => GridPlan {
+            out_w: fit.cols.clamp(1, src_w),
+            out_h: fit.rows.clamp(1, src_h),
+            detected_pixel_size: Some((fit.pitch_x + fit.pitch_y) * 0.5),
+            phase: Some((
+                fit.origin_x.rem_euclid(fit.pitch_x).round() as u32,
+                fit.origin_y.rem_euclid(fit.pitch_y).round() as u32,
+            )),
+            phase_confidence: Some(fit.coherence),
+            sampling: Some(SamplingGrid {
+                origin_x: fit.origin_x,
+                origin_y: fit.origin_y,
+                cell_w: fit.pitch_x,
+                cell_h: fit.pitch_y,
+            }),
+            auto: Some(AutoGrid::Lattice),
+        },
+        GridDecision::NoGrid { coherence, .. } => {
+            let long = src_w.max(src_h);
+            let native = long <= NO_GRID_NATIVE_LONG_SIDE
+                || distinct_opaque_colors_at_most(src, NO_GRID_NATIVE_MAX_COLORS);
+            let pixel_size = if native {
+                1.0
+            } else {
+                (long as f64 / NO_GRID_TARGET_LONG_SIDE as f64).round().max(2.0)
+            };
+            let size = target_size_from_pixel_size(src_w, src_h, pixel_size);
+            GridPlan {
+                out_w: size.0,
+                out_h: size.1,
+                detected_pixel_size: Some(pixel_size),
+                phase: None,
+                phase_confidence: Some(coherence),
+                sampling: None,
+                auto: Some(if native {
+                    AutoGrid::Native
+                } else {
+                    AutoGrid::Reduced
+                }),
+            }
+        }
+    }
+}
+
+fn distinct_opaque_colors_at_most(src: &RgbaImage, limit: usize) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    for p in src.pixels() {
+        if p[3] >= 128 && seen.insert([p[0], p[1], p[2]]) && seen.len() > limit {
+            return false;
+        }
+    }
+    true
 }
 
 fn unsnapped_plan(src_w: u32, src_h: u32, requested_long: u32) -> GridPlan {
@@ -654,6 +746,7 @@ fn unsnapped_plan(src_w: u32, src_h: u32, requested_long: u32) -> GridPlan {
         phase: None,
         phase_confidence: None,
         sampling: None,
+        auto: None,
     }
 }
 
@@ -662,11 +755,7 @@ pub(crate) fn target_grid(src: &RgbaImage, cfg: &Config) -> GridPlan {
     if let Some(pixel_size) = cfg.pixel_size {
         grid_plan_from_pixel_size(src, pixel_size, None, cfg)
     } else if cfg.auto_pixel_size {
-        if let Some(pixel_size) = detect_pixel_size(src) {
-            grid_plan_from_pixel_size(src, pixel_size, Some(pixel_size), cfg)
-        } else {
-            unsnapped_plan(src_w, src_h, cfg.size)
-        }
+        auto_grid_plan(src)
     } else {
         unsnapped_plan(src_w, src_h, cfg.size)
     }
@@ -717,6 +806,7 @@ fn grid_plan_from_pixel_size(
                 cell_w: pixel_size,
                 cell_h: pixel_size,
             }),
+            auto: None,
         };
     }
 
@@ -728,6 +818,7 @@ fn grid_plan_from_pixel_size(
         phase: None,
         phase_confidence: None,
         sampling: None,
+        auto: None,
     }
 }
 
@@ -754,46 +845,6 @@ pub(crate) fn target_size_from_pixel_size(src_w: u32, src_h: u32, pixel_size: f6
     let w = ((src_w as f64 / pixel_size).round() as u32).clamp(1, src_w);
     let h = ((src_h as f64 / pixel_size).round() as u32).clamp(1, src_h);
     (w, h)
-}
-
-pub(crate) fn detect_pixel_size(src: &RgbaImage) -> Option<f64> {
-    if let Some(pixel_size) = detect_pixel_size_from_runs(src) {
-        if (pixel_size - 5.0).abs() <= 0.2 && looks_like_two_pixel_downscale(src) {
-            return Some(2.0);
-        }
-        return Some(pixel_size);
-    }
-
-    let (cols, rows) = edge_profiles(src);
-    let sx = estimate_profile_step(&cols);
-    let sy = estimate_profile_step(&rows);
-    let detected = match (sx, sy) {
-        (Some(x), Some(y)) => {
-            let ratio = x.max(y) / x.min(y);
-            if ratio <= 1.8 {
-                Some((x + y) * 0.5)
-            } else {
-                Some(x.min(y))
-            }
-        }
-        (Some(x), None) => Some(x),
-        (None, Some(y)) => Some(y),
-        // If no larger grid is visible, the safest auto answer is 1:1. This
-        // covers deliberately mangled pixel art that is already at its target
-        // pixel resolution; shrinking it to the generic target size destroys it.
-        (None, None) => Some(1.0),
-    }?;
-
-    let upper = (src.width().min(src.height()) as f64 / 2.0).clamp(1.0, MAX_AUTO_PIXEL_SIZE);
-    let detected = detected.clamp(1.0, upper);
-    if detected >= 2.0 {
-        let confident = detect_grid_phase_with_confidence(src, detected)
-            .is_some_and(|(_, confidence)| confidence >= MIN_EDGE_AUTO_PHASE_CONFIDENCE);
-        if !confident {
-            return Some(1.0);
-        }
-    }
-    Some(detected)
 }
 
 /// Detect the strongest grid phase and how decisive it was. Confidence is
@@ -874,239 +925,6 @@ fn best_phase_for_step(profile: &[f64], step: usize) -> Option<PhaseScore> {
     })
 }
 
-const MAX_AUTO_PIXEL_SIZE: f64 = 32.0;
-const MIN_AUTO_PIXEL_SIZE: usize = 3;
-const MIN_EDGE_AUTO_PHASE_CONFIDENCE: f32 = 0.08;
-const MIN_LOW_SCALE_RUN_CELL_COHERENCE_P25: f32 = 0.55;
-const MIN_RUN_CELL_COHERENCE_MEDIAN: f32 = 0.51;
-const MIN_RUN_SCORE_CONFIDENCE: f64 = 0.7;
-const RUN_RETRY_MIN_SCORE_RATIO: f64 = 0.65;
-const RUN_RETRY_MIN_SHORT_SIDE: u32 = 384;
-const TWO_PIXEL_DOWNSCALE_MIN_SHORT_SIDE: u32 = 768;
-const TWO_PIXEL_DOWNSCALE_MIN_WEIGHT_SHARE: f64 = 0.11;
-const TWO_PIXEL_DOWNSCALE_MIN_COUNT_RATIO: f64 = 1.08;
-
-fn detect_pixel_size_from_runs(src: &RgbaImage) -> Option<f64> {
-    let max = MAX_AUTO_PIXEL_SIZE as usize;
-    let mut run_lengths = Vec::new();
-
-    for y in 0..src.height() {
-        let mut current = coarse_key(src.get_pixel(0, y));
-        let mut len = 1usize;
-        for x in 1..src.width() {
-            let key = coarse_key(src.get_pixel(x, y));
-            if key == current {
-                len += 1;
-            } else {
-                push_run_length(&mut run_lengths, len, max);
-                current = key;
-                len = 1;
-            }
-        }
-        push_run_length(&mut run_lengths, len, max);
-    }
-
-    for x in 0..src.width() {
-        let mut current = coarse_key(src.get_pixel(x, 0));
-        let mut len = 1usize;
-        for y in 1..src.height() {
-            let key = coarse_key(src.get_pixel(x, y));
-            if key == current {
-                len += 1;
-            } else {
-                push_run_length(&mut run_lengths, len, max);
-                current = key;
-                len = 1;
-            }
-        }
-        push_run_length(&mut run_lengths, len, max);
-    }
-
-    if run_lengths.len() < 64 {
-        return None;
-    }
-
-    let mut candidates = Vec::new();
-    for candidate in MIN_AUTO_PIXEL_SIZE..=max {
-        let mut score = 0.0;
-        for &len in &run_lengths {
-            let rem = len % candidate;
-            let near_multiple = rem <= 1 || candidate - rem <= 1;
-            if near_multiple {
-                score += len.min(candidate * 3) as f64;
-                if (len as isize - candidate as isize).abs() <= 1 {
-                    score += candidate as f64 * 2.0;
-                }
-            }
-        }
-        score *= (candidate as f64).sqrt();
-        candidates.push((candidate, score));
-    }
-
-    let total: usize = run_lengths.iter().sum();
-    let min_score = total.max(1) as f64 * MIN_RUN_SCORE_CONFIDENCE;
-    candidates.retain(|&(_, score)| score >= min_score);
-    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    let best_score = candidates.first().map(|&(_, score)| score)?;
-    let best_candidate = candidates[0];
-    let mut retry_candidates = candidates[1..].to_vec();
-    retry_candidates.sort_by_key(|&(candidate, _)| candidate);
-
-    for (index, (candidate, score)) in std::iter::once(best_candidate)
-        .chain(retry_candidates.into_iter())
-        .enumerate()
-    {
-        if index > 0 {
-            let source_is_large = src.width().min(src.height()) >= RUN_RETRY_MIN_SHORT_SIDE;
-            let runner_up_is_plausible =
-                candidate >= 5 && score >= best_score * RUN_RETRY_MIN_SCORE_RATIO;
-            if !source_is_large || !runner_up_is_plausible {
-                continue;
-            }
-        }
-        let pixel_size = candidate as f64;
-        if run_candidate_has_cell_coherence(src, pixel_size) {
-            return Some(pixel_size);
-        }
-    }
-
-    None
-}
-
-fn coarse_key(px: &Rgba<u8>) -> u16 {
-    if px[3] < 128 {
-        return 0;
-    }
-    let r = (px[0] >> 5) as u16;
-    let g = (px[1] >> 5) as u16;
-    let b = (px[2] >> 5) as u16;
-    1 + (r << 6) + (g << 3) + b
-}
-
-fn push_run_length(run_lengths: &mut Vec<usize>, len: usize, max: usize) {
-    if (MIN_AUTO_PIXEL_SIZE..=max).contains(&len) {
-        run_lengths.push(len);
-    }
-}
-
-fn looks_like_two_pixel_downscale(src: &RgbaImage) -> bool {
-    if src.width().min(src.height()) < TWO_PIXEL_DOWNSCALE_MIN_SHORT_SIDE {
-        return false;
-    }
-
-    let mut counts = [0usize; 6];
-    let mut total_weight = 0usize;
-    let max = MAX_AUTO_PIXEL_SIZE as usize;
-
-    for y in 0..src.height() {
-        let mut current = coarse_key(src.get_pixel(0, y));
-        let mut len = 1usize;
-        for x in 1..src.width() {
-            let key = coarse_key(src.get_pixel(x, y));
-            if key == current {
-                len += 1;
-            } else {
-                count_short_run(&mut counts, &mut total_weight, len, max);
-                current = key;
-                len = 1;
-            }
-        }
-        count_short_run(&mut counts, &mut total_weight, len, max);
-    }
-
-    for x in 0..src.width() {
-        let mut current = coarse_key(src.get_pixel(x, 0));
-        let mut len = 1usize;
-        for y in 1..src.height() {
-            let key = coarse_key(src.get_pixel(x, y));
-            if key == current {
-                len += 1;
-            } else {
-                count_short_run(&mut counts, &mut total_weight, len, max);
-                current = key;
-                len = 1;
-            }
-        }
-        count_short_run(&mut counts, &mut total_weight, len, max);
-    }
-
-    if total_weight == 0 {
-        return false;
-    }
-
-    let short_neighbors = counts[3] + counts[4] + counts[5];
-    if short_neighbors == 0 {
-        return false;
-    }
-    let two_weight_share = (counts[2] * 2) as f64 / total_weight as f64;
-    let two_count_ratio = counts[2] as f64 / short_neighbors as f64;
-    two_weight_share >= TWO_PIXEL_DOWNSCALE_MIN_WEIGHT_SHARE
-        && two_count_ratio >= TWO_PIXEL_DOWNSCALE_MIN_COUNT_RATIO
-}
-
-fn count_short_run(counts: &mut [usize; 6], total_weight: &mut usize, len: usize, max: usize) {
-    if len == 0 || len > max {
-        return;
-    }
-    *total_weight += len;
-    if len < counts.len() {
-        counts[len] += 1;
-    }
-}
-
-fn run_candidate_has_cell_coherence(src: &RgbaImage, pixel_size: f64) -> bool {
-    let step = pixel_size.round();
-    if step < 2.0 || (pixel_size - step).abs() > 0.2 {
-        return pixel_size <= 1.0;
-    }
-    let step = step as usize;
-    let (w, h) = src.dimensions();
-    if w < step as u32 || h < step as u32 {
-        return false;
-    }
-    let phase = detect_grid_phase_with_confidence(src, pixel_size)
-        .map(|(phase, _)| phase)
-        .unwrap_or((0, 0));
-    let x_start = phase.0.min(w.saturating_sub(1)) as usize;
-    let y_start = phase.1.min(h.saturating_sub(1)) as usize;
-    let w = w as usize;
-    let h = h as usize;
-    let mut dominant_counts = Vec::new();
-    let area = step * step;
-    // coarse_key ranges 0..=512.
-    let mut counts = [0u16; 513];
-
-    let mut y0 = y_start;
-    while y0 + step <= h {
-        let mut x0 = x_start;
-        while x0 + step <= w {
-            counts.fill(0);
-            let mut best = 0u16;
-            for y in y0..y0 + step {
-                for x in x0..x0 + step {
-                    let key = coarse_key(src.get_pixel(x as u32, y as u32)) as usize;
-                    counts[key] += 1;
-                    best = best.max(counts[key]);
-                }
-            }
-            dominant_counts.push(best);
-            x0 += step;
-        }
-        y0 += step;
-    }
-
-    if dominant_counts.len() < 16 {
-        return true;
-    }
-    dominant_counts.sort_unstable();
-    let p25 = dominant_counts[dominant_counts.len() / 4] as f32 / area as f32;
-    let median = dominant_counts[dominant_counts.len() / 2] as f32 / area as f32;
-    if step <= 4 {
-        return p25 >= MIN_LOW_SCALE_RUN_CELL_COHERENCE_P25;
-    }
-    median >= MIN_RUN_CELL_COHERENCE_MEDIAN
-}
-
 fn edge_profiles(src: &RgbaImage) -> (Vec<f64>, Vec<f64>) {
     let (w, h) = src.dimensions();
     let mut cols = vec![0.0; w as usize];
@@ -1137,112 +955,6 @@ fn luma(px: &Rgba<u8>) -> f64 {
         return 0.0;
     }
     (0.2126 * px[0] as f64 + 0.7152 * px[1] as f64 + 0.0722 * px[2] as f64) * (px[3] as f64 / 255.0)
-}
-
-fn estimate_profile_step(profile: &[f64]) -> Option<f64> {
-    if profile.len() < 6 {
-        return None;
-    }
-
-    let max = profile.iter().copied().fold(0.0, f64::max);
-    if max <= 0.0 {
-        return None;
-    }
-    let mean = profile.iter().sum::<f64>() / profile.len() as f64;
-    let variance = profile
-        .iter()
-        .map(|v| {
-            let d = v - mean;
-            d * d
-        })
-        .sum::<f64>()
-        / profile.len() as f64;
-    let std = variance.sqrt();
-    let threshold = (mean + std * 0.35).max(max * 0.18);
-
-    let mut peaks = Vec::new();
-    for i in 1..profile.len() - 1 {
-        if profile[i] >= threshold && profile[i] > profile[i - 1] && profile[i] >= profile[i + 1] {
-            if peaks.last().is_none_or(|&last| i - last >= 2) {
-                peaks.push(i);
-            } else if let Some(last) = peaks.last_mut() {
-                if profile[i] > profile[*last] {
-                    *last = i;
-                }
-            }
-        }
-    }
-
-    if peaks.len() >= 3 {
-        let mut diffs: Vec<f64> = peaks
-            .windows(2)
-            .map(|pair| (pair[1] - pair[0]) as f64)
-            .filter(|&d| (3.0..=MAX_AUTO_PIXEL_SIZE).contains(&d))
-            .collect();
-        if !diffs.is_empty() {
-            diffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let median = diffs[diffs.len() / 2];
-            if periodic_score(profile, median) >= 0.25 {
-                return Some(median);
-            }
-        }
-    }
-
-    estimate_profile_step_by_periodicity(profile, std)
-}
-
-fn estimate_profile_step_by_periodicity(profile: &[f64], std: f64) -> Option<f64> {
-    if std <= f64::EPSILON {
-        return None;
-    }
-    let upper = (profile.len() / 3).clamp(3, MAX_AUTO_PIXEL_SIZE as usize);
-    let mut best = None;
-    let mut best_score = 0.0;
-
-    for step in 3..=upper {
-        let score = periodic_score(profile, step as f64);
-        if score > best_score {
-            best_score = score;
-            best = Some(step as f64);
-        }
-    }
-
-    if best_score >= 0.25 {
-        best
-    } else {
-        None
-    }
-}
-
-fn periodic_score(profile: &[f64], step: f64) -> f64 {
-    let step = step.round() as usize;
-    if step < 2 || step >= profile.len() {
-        return 0.0;
-    }
-    let mean = profile.iter().sum::<f64>() / profile.len() as f64;
-    let max = profile.iter().copied().fold(0.0, f64::max);
-    if max <= mean {
-        return 0.0;
-    }
-
-    let mut best = 0.0;
-    for phase in 0..step {
-        let mut sum = 0.0;
-        let mut count = 0usize;
-        let mut i = phase;
-        while i < profile.len() {
-            sum += profile[i];
-            count += 1;
-            i += step;
-        }
-        if count > 0 {
-            let avg = sum / count as f64;
-            if avg > best {
-                best = avg;
-            }
-        }
-    }
-    ((best - mean) / (max - mean)).clamp(0.0, 1.0)
 }
 
 fn rgba8_to_linear(src: &RgbaImage) -> Vec<f32> {
@@ -1741,17 +1453,16 @@ mod tests {
             }
         }
 
-        let detected = detect_pixel_size(&img).unwrap();
-        assert!(
-            (detected - 5.0).abs() <= 1.0,
-            "expected about 5, got {detected}"
-        );
+        let plan = auto_grid_plan(&img);
+        assert_eq!(plan.detected_pixel_size, Some(5.0));
+        assert_eq!((plan.out_w, plan.out_h), (12, 8));
+        assert_eq!(plan.auto, Some(AutoGrid::Lattice));
     }
 
     #[test]
     fn auto_pixel_size_falls_back_to_one_to_one_when_no_grid_is_detected() {
         let img = RgbaImage::from_pixel(37, 23, Rgba([128, 128, 128, 255]));
-        assert_eq!(detect_pixel_size(&img), Some(1.0));
+        assert_eq!(auto_grid_plan(&img).auto, Some(AutoGrid::Native));
 
         let config = Config {
             auto_pixel_size: true,
@@ -1761,135 +1472,6 @@ mod tests {
         let grid = target_grid(&img, &config);
         assert_eq!((grid.out_w, grid.out_h), (37, 23));
         assert_eq!(grid.detected_pixel_size, Some(1.0));
-    }
-
-    #[test]
-    fn run_candidate_coherence_rejects_mixed_cells() {
-        let mut mixed = RgbaImage::new(32, 32);
-        let mut coherent = RgbaImage::new(32, 32);
-        let mut fuzzy_majority = RgbaImage::new(40, 40);
-        for y in 0..mixed.height() {
-            for x in 0..mixed.width() {
-                let mixed_color = if (x + y) % 2 == 0 {
-                    Rgba([40, 70, 120, 255])
-                } else {
-                    Rgba([210, 190, 90, 255])
-                };
-                mixed.put_pixel(x, y, mixed_color);
-
-                let coherent_color = if ((x / 4) + (y / 4)) % 2 == 0 {
-                    Rgba([40, 70, 120, 255])
-                } else {
-                    Rgba([210, 190, 90, 255])
-                };
-                coherent.put_pixel(x, y, coherent_color);
-            }
-        }
-        for y in 0..fuzzy_majority.height() {
-            for x in 0..fuzzy_majority.width() {
-                let cell_dark = ((x / 5) + (y / 5)) % 2 == 0;
-                let base = if cell_dark {
-                    Rgba([40, 70, 120, 255])
-                } else {
-                    Rgba([210, 190, 90, 255])
-                };
-                let stray = if cell_dark {
-                    Rgba([90, 120, 170, 255])
-                } else {
-                    Rgba([160, 130, 40, 255])
-                };
-                let in_cell = (y % 5) * 5 + (x % 5);
-                fuzzy_majority.put_pixel(x, y, if in_cell < 13 { base } else { stray });
-            }
-        }
-        assert!(!run_candidate_has_cell_coherence(&mixed, 4.0));
-        assert!(run_candidate_has_cell_coherence(&coherent, 4.0));
-        assert!(run_candidate_has_cell_coherence(&fuzzy_majority, 5.0));
-    }
-
-    #[test]
-    fn auto_pixel_size_retries_strong_coherent_runner_up() {
-        let mut img = RgbaImage::new(600, 600);
-        for y in 0..img.height() {
-            for x in 0..img.width() {
-                let cell_dark = ((x / 5) + (y / 5)) % 2 == 0;
-                let base = if cell_dark {
-                    Rgba([40, 70, 120, 255])
-                } else {
-                    Rgba([210, 190, 90, 255])
-                };
-                let stray = if cell_dark {
-                    Rgba([90, 120, 170, 255])
-                } else {
-                    Rgba([160, 130, 40, 255])
-                };
-                let wide_stray_band = x < 450;
-                let in_cell_x = x % 5;
-                let use_base = if wide_stray_band {
-                    in_cell_x < 3
-                } else {
-                    in_cell_x < 4
-                };
-                img.put_pixel(x, y, if use_base { base } else { stray });
-            }
-        }
-
-        assert!(!run_candidate_has_cell_coherence(&img, 4.0));
-        assert!(run_candidate_has_cell_coherence(&img, 5.0));
-        assert_eq!(detect_pixel_size(&img), Some(5.0));
-    }
-
-    #[test]
-    fn local_example_auto_pixel_sizes_match_file_names() {
-        use std::path::Path;
-
-        let examples = Path::new("examples");
-        if !examples.exists() {
-            return;
-        }
-
-        let mut checked = 0usize;
-        let mut failures = Vec::new();
-        for entry in std::fs::read_dir(examples).expect("read examples dir") {
-            let entry = entry.expect("read example entry");
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            if !["png", "jpg", "jpeg", "webp"].contains(&ext.to_ascii_lowercase().as_str()) {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let expected = stem
-                .strip_suffix("_fail")
-                .unwrap_or(stem)
-                .rsplit('_')
-                .find_map(|part| part.parse::<u32>().ok());
-            let Some(expected) = expected else {
-                continue;
-            };
-
-            let img = crate::image_io::load_rgba_from_path(&path)
-                .unwrap_or_else(|err| panic!("open {}: {err}", path.display()));
-            let detected = detect_pixel_size(&img).unwrap_or(1.0).round().max(1.0) as u32;
-            checked += 1;
-            if detected != expected {
-                failures.push(format!(
-                    "{} expected {expected}, got {detected}",
-                    path.display()
-                ));
-            }
-        }
-
-        if checked == 0 {
-            return;
-        }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
@@ -1905,7 +1487,9 @@ mod tests {
                 img.put_pixel(x, y, color);
             }
         }
-        assert_eq!(detect_pixel_size(&img), Some(1.0));
+        let plan = auto_grid_plan(&img);
+        assert_eq!((plan.out_w, plan.out_h), (32, 32));
+        assert_eq!(plan.auto, Some(AutoGrid::Native));
     }
 
     #[test]

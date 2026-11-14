@@ -14,6 +14,7 @@ pub mod dither;
 pub mod downsample;
 pub mod enhance;
 pub mod fmath;
+pub mod grid;
 pub mod image_io;
 pub mod kmeans;
 pub mod morphology;
