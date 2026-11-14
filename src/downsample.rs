@@ -241,6 +241,25 @@ pub fn downsample_grid_opts(
     out
 }
 
+/// `CellMode::Smart` over an elastic grid: every cell has its own bounds.
+pub fn downsample_smart_elastic(
+    src: &[f32],
+    src_w: usize,
+    src_h: usize,
+    grid: &crate::elastic::ElasticGrid,
+) -> Vec<f32> {
+    assert_eq!(src.len(), src_w * src_h * 4);
+    let mut out = Vec::with_capacity(grid.cols * grid.rows * 4);
+    let mut scratch = SmartScratch::default();
+    for cy in 0..grid.rows {
+        for cx in 0..grid.cols {
+            let px = reduce_cell_smart(src, src_w, src_h, grid.bounds(cx, cy), &mut scratch);
+            out.extend_from_slice(&px);
+        }
+    }
+    out
+}
+
 /// Whether `CellMode::Adaptive` would actually run for this job, or fall back
 /// to `Detail`. Exposed so the pipeline can report the fallback.
 pub fn adaptive_fits_budget(

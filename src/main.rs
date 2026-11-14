@@ -79,6 +79,11 @@ struct Args {
     #[arg(long, value_enum, default_value_t = CellModeArg::Smart)]
     cell: CellModeArg,
 
+    /// Let cell boundaries follow nearby edges (smart cells only). Recovers
+    /// lettering, thin outlines and ornaments drawn off the pixel grid.
+    #[arg(long)]
+    elastic: bool,
+
     /// Minimum winning-bucket coverage for dominant/detail cells before falling back to mean.
     #[arg(long, default_value_t = 0.25)]
     dominant_threshold: f32,
@@ -605,6 +610,7 @@ fn build_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         scale: args.scale,
         alpha_threshold: args.alpha_threshold,
         cell: args.cell.into(),
+        elastic: args.elastic,
         dominant_threshold: args.dominant_threshold,
         adaptive_iterations: args.adaptive_iterations,
         highlight_collapse: args.highlight_collapse,

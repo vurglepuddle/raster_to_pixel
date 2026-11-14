@@ -212,6 +212,8 @@ fn auto_config() -> Config {
     // label was produced with those (detail cells, k-means, bucket-count colours).
     Config {
         max_output_pixels: Some(20_000_000),
+        // Lab switch for A/B labels; the shipped preset decides the default.
+        elastic: std::env::var("PIXELINE_ELASTIC").map_or(Config::auto().elastic, |v| v == "1"),
         ..Config::auto()
     }
 }

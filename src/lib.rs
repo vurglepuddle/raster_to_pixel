@@ -12,6 +12,7 @@ pub mod artpalette;
 pub mod api;
 pub mod color;
 pub mod deblur;
+pub mod elastic;
 pub mod dither;
 pub mod downsample;
 pub mod enhance;

@@ -15,11 +15,11 @@ use image::{imageops::FilterType, Rgba, RgbaImage};
 use crate::{
     alpha::{apply_alpha_mode, AlphaMode},
     artpalette,
-    deblur,
+    deblur, elastic,
     color::{linear_to_oklab, linear_to_srgb, oklab_to_srgb8, srgb8_to_oklab, srgb_to_linear},
     dither::ordered_dither,
     downsample::{
-        adaptive_fits_budget, downsample_grid_opts, CellMode, DownsampleOptions, SamplingGrid,
+        adaptive_fits_budget, downsample_grid_opts, downsample_smart_elastic, CellMode, DownsampleOptions, SamplingGrid,
         DEFAULT_ADAPTIVE_ITERATIONS, DEFAULT_DOMINANT_THRESHOLD, MAX_ADAPTIVE_ITERATIONS,
     },
     enhance::expand_contrast,
@@ -171,6 +171,9 @@ pub struct Config {
     pub outline: OutlineMode,
     /// Write an original|result side-by-side comparison sheet.
     pub compare: bool,
+    /// Let cell boundaries follow nearby edges (`CellMode::Smart` only):
+    /// recovers lettering, thin outlines and ornaments drawn off the grid.
+    pub elastic: bool,
     /// Refuse (with an error, before the expensive work) if the final image would
     /// exceed this many pixels. None means no limit.
     pub max_output_pixels: Option<u64>,
@@ -208,6 +211,7 @@ impl Default for Config {
             contrast_expansion: 0,
             outline: OutlineMode::None,
             compare: false,
+            elastic: false,
             max_output_pixels: None,
         }
     }
@@ -300,6 +304,8 @@ pub struct ConvertResult {
     /// Neighbour mixing (x, y) that `CellMode::Smart` measured and removed;
     /// (0, 0) for a sharp source. None for other cell modes.
     pub cell_leak: Option<(f32, f32)>,
+    /// Cell boundaries the elastic grid moved off the lattice (None: not used).
+    pub elastic_moved: Option<usize>,
     /// The color count `auto_colors` chose (adaptive palettes only).
     pub auto_colors: Option<usize>,
     /// Source pixels made transparent by the alpha pre-pass.
@@ -340,7 +346,7 @@ impl ConvertResult {
                 "  \"outWidth\": {}, \"outHeight\": {},\n",
                 "  \"requestedPixelSize\": {}, \"detectedPixelSize\": {},\n",
                 "  \"snapGrid\": {}, \"gridPhaseX\": {}, \"gridPhaseY\": {}, \"phaseConfidence\": {},\n",
-                "  \"autoGrid\": {}, \"cellLeakX\": {}, \"cellLeakY\": {},\n",
+                "  \"autoGrid\": {}, \"cellLeakX\": {}, \"cellLeakY\": {}, \"elasticMoved\": {},\n",
                 "  \"paletteLen\": {}, \"autoColors\": {},\n",
                 "  \"cellMode\": \"{:?}\", \"adaptiveIterations\": {}, \"adaptiveFallback\": {},\n",
                 "  \"alphaMode\": \"{:?}\", \"alphaRemoved\": {},\n",
@@ -369,6 +375,7 @@ impl ConvertResult {
                 .map_or("null".into(), |g| format!("\"{g:?}\"")),
             opt_f32(self.cell_leak.map(|l| l.0)),
             opt_f32(self.cell_leak.map(|l| l.1)),
+            opt_usize(self.elastic_moved),
             self.palette_len,
             opt_usize(self.auto_colors),
             cfg.cell,
@@ -455,19 +462,27 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
             sampling.cell_h,
             cfg.adaptive_iterations,
         );
-    let mut small = downsample_grid_opts(
-        &linear,
-        src_w as usize,
-        src_h as usize,
-        grid.out_w as usize,
-        grid.out_h as usize,
-        sampling,
-        DownsampleOptions {
-            mode: cfg.cell,
-            dominant_threshold: cfg.dominant_threshold,
-            adaptive_iterations: cfg.adaptive_iterations,
-        },
-    );
+    let elastic_grid = (cfg.elastic && cfg.cell == CellMode::Smart)
+        .then(|| elastic::fit(work, sampling, grid.out_w as usize, grid.out_h as usize))
+        .flatten();
+    let mut small = match &elastic_grid {
+        Some(elastic_grid) => {
+            downsample_smart_elastic(&linear, src_w as usize, src_h as usize, elastic_grid)
+        }
+        None => downsample_grid_opts(
+            &linear,
+            src_w as usize,
+            src_h as usize,
+            grid.out_w as usize,
+            grid.out_h as usize,
+            sampling,
+            DownsampleOptions {
+                mode: cfg.cell,
+                dominant_threshold: cfg.dominant_threshold,
+                adaptive_iterations: cfg.adaptive_iterations,
+            },
+        ),
+    };
 
     // Smart cells are a reconstruction of the art pixels, so they also undo
     // the neighbour mixing a blurred or resampled source carries.
@@ -522,6 +537,7 @@ pub fn convert(src: &RgbaImage, cfg: &Config) -> Result<ConvertResult, String> {
         phase_confidence: grid.phase_confidence,
         auto_grid: grid.auto,
         cell_leak: cell_leak.map(|l| (l.x, l.y)),
+        elastic_moved: elastic_grid.as_ref().map(|g| g.moved),
         auto_colors,
         alpha_removed,
         cleanup,
