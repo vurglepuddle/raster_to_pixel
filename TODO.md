@@ -251,6 +251,24 @@ Goal: help with the last annoying artifacts without making the default destructi
 - GUI does not expose `--phase-x`/`--phase-y` yet (the server already parses
   `phaseX`/`phaseY` form fields).
 
+## Next engine step: 1-px lines (researched 2026-11-15)
+
+Symptom: on drifted generated art (border_5 scarab) 1-px outlines lose a pixel or double.
+Cause: Smart cells weight pixels toward the cell centre; a line on a cell boundary is weak in
+both cells (lost), a line 1-1.5 cells wide covers both centres (doubled). Each cell decides alone.
+- Ridge claim (Shilo/pixilate `prototype/src/lib/core/resample.ts` `ridges()`, MIT, credit in
+  NOTICE): dark and light top-hat of Oklab L (radius ~0.75 cell), averaged per cell; the cell
+  that is the strict maximum across the line (x or y) above a threshold takes the line colour,
+  its neighbours across the line leave line pixels out. One cell per crossing. pixilate only
+  uses it on its no-grid resize path, unblinded evidence: treat as an experiment.
+- Gap bridging (same file, `BRIDGE = 0.15`): a cell between two cells of one thin feature
+  with >= 15% coverage of it joins the line.
+- Dark colour drift: pixilate uses toe-corrected lightness (Okhsl `L_r`) for palette
+  distances; a noisy black outline gave 3 dark entries in raw Oklab, 1 with the toe.
+- Wire GUI "Protect 1px details" to the ridge claim: today it only exempts pixels from
+  cleanup (off by default), and Outline Repair/Enforce only works on transparent sprites.
+- Gate: synthetic eval neutral; view scarab, START, castle, alch by eye.
+
 ## Later
 
 - Mobile version improvements (web UI on phones).
