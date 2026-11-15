@@ -21,6 +21,12 @@
 //! unit: "one full-height edge". Where the source is on the lattice the
 //! optimum is the lattice itself and nothing changes.
 //!
+//! `t_i` is the lattice line moved to the local phase of the art around it
+//! (`local_phase`). A region drawn on its own offset grid, such as an
+//! ornament pasted into a frame, then keeps its offset where it has no edges
+//! (a stretch of identical rows), instead of drifting back to the global
+//! lattice there and splitting its art pixels between two cells.
+//!
 //! Only additions, multiplications and comparisons on integers and `f64`s are
 //! used, so native and WebAssembly builds agree bit for bit.
 
@@ -54,6 +60,15 @@ const STRETCH: f64 = 0.5;
 const MAX_SHIFT: f64 = 0.5;
 /// Narrowest cell, in cells.
 const MIN_WIDTH: f64 = 0.45;
+/// Local phase window: this many cells to each side of a boundary.
+const PHASE_WINDOW: usize = 4;
+/// Edges in the window must agree on one phase at least this well
+/// (resultant length of their phase angles, 0..1).
+const PHASE_MIN_AGREEMENT: f64 = 0.5;
+/// Edge weight the window needs, in full-strength edges one cell long.
+const PHASE_MIN_EDGES: f64 = 4.0;
+/// A local phase nearer the lattice than this (pixels) is the lattice.
+const PHASE_MIN_SHIFT: f64 = 0.75;
 
 /// Per-band cell boundaries in source pixels.
 #[derive(Clone, Debug)]
@@ -149,7 +164,17 @@ impl Solver {
     /// Boundaries `out[0..=cells]` along a band of `len` source pixels whose
     /// edge profile is `self.profile` (`len + 1` entries). Returns how many
     /// moved by at least half a pixel.
-    fn solve(&mut self, len: usize, origin: f64, pitch: f64, cells: usize, out: &mut [f64]) -> usize {
+    /// `anchor[i]` moves boundary `i`'s home from its lattice line by that
+    /// many pixels (the local phase of the art around it).
+    fn solve(
+        &mut self,
+        len: usize,
+        origin: f64,
+        pitch: f64,
+        cells: usize,
+        anchor: &[f64],
+        out: &mut [f64],
+    ) -> usize {
         let n = len as f64;
         // A wobbling edge spreads over neighbouring positions: let each
         // position see half of its neighbours' share.
@@ -167,7 +192,7 @@ impl Solver {
         let reach = MAX_SHIFT * pitch;
         let min_width = (MIN_WIDTH * pitch).max(1.0);
         for i in 0..=cells {
-            let nominal = (origin + i as f64 * pitch).clamp(0.0, n);
+            let nominal = (origin + i as f64 * pitch + anchor[i]).clamp(0.0, n);
             self.first.push(self.pos.len());
             // Candidates in order of preference: the lattice line itself,
             // then whole-pixel positions by increasing distance from it.
@@ -257,7 +282,8 @@ impl Solver {
         let mut moved = 0;
         for i in (0..=cells).rev() {
             out[i] = self.pos[s];
-            if (self.pos[s] - self.pos[self.first[i]]).abs() >= 0.5 {
+            let lattice = (origin + i as f64 * pitch).clamp(0.0, n);
+            if (self.pos[s] - lattice).abs() >= 0.5 {
                 moved += 1;
             }
             if i > 0 {
@@ -266,6 +292,89 @@ impl Solver {
         }
         moved
     }
+}
+
+/// Local phase of the edges that column (or row) boundaries follow, as a
+/// whole-pixel shift for every boundary of every band (`band * (cells + 1) +
+/// boundary`). `edge(along, across)` is the edge weight at pixel boundary
+/// `along` on scan line `across`; boundaries split the `along` axis into
+/// `cells` cells from `origin` at `pitch`, bands split the `across` axis into
+/// `bands` cells from `band_origin` at `band_pitch`.
+///
+/// Every edge votes with its position on the lattice as an angle (a full
+/// pitch is a full turn); the circular mean over the cells around a boundary
+/// is the phase the art there is drawn at. Where the edges agree on a phase
+/// at least a pixel from the lattice line, the boundary's home moves there:
+/// art drawn on its own offset grid (an ornament, a sprite pasted in) keeps
+/// its offset through stretches without edges, instead of drifting back to
+/// the global lattice halfway through.
+#[allow(clippy::too_many_arguments)]
+fn local_phase(
+    edge: &dyn Fn(usize, usize) -> u8,
+    along_len: usize,
+    across_len: usize,
+    origin: f64,
+    pitch: f64,
+    cells: usize,
+    band_origin: f64,
+    band_pitch: f64,
+    bands: usize,
+) -> Vec<f64> {
+    let stride = cells + 1;
+    let turn = std::f64::consts::TAU / pitch;
+    let (cos_t, sin_t): (Vec<f64>, Vec<f64>) = (0..=along_len)
+        .map(|a| {
+            let (s, c) = crate::fmath::sin_cos(((a as f64 - origin) * turn) as f32);
+            (c as f64, s as f64)
+        })
+        .unzip();
+    // Per (band, boundary) block sums of cos, sin and weight, then prefix
+    // sums over both axes for the windows.
+    let mut sums = vec![[0f64; 3]; (bands + 1) * (stride + 1)];
+    for across in 0..across_len {
+        let b = (((across as f64 - band_origin) / band_pitch).floor().max(0.0) as usize).min(bands - 1);
+        for a in 1..along_len {
+            let v = edge(a, across);
+            if v == 0 {
+                continue;
+            }
+            let i = (((a as f64 - origin) / pitch).round().max(0.0) as usize).min(cells);
+            let wgt = v as f64;
+            let cell = &mut sums[(b + 1) * (stride + 1) + i + 1];
+            cell[0] += wgt * cos_t[a];
+            cell[1] += wgt * sin_t[a];
+            cell[2] += wgt;
+        }
+    }
+    for b in 1..=bands {
+        for i in 1..=stride {
+            for k in 0..3 {
+                let v = sums[b * (stride + 1) + i][k] + sums[(b - 1) * (stride + 1) + i][k]
+                    + sums[b * (stride + 1) + i - 1][k]
+                    - sums[(b - 1) * (stride + 1) + i - 1][k];
+                sums[b * (stride + 1) + i][k] = v;
+            }
+        }
+    }
+    let min_weight = PHASE_MIN_EDGES * 255.0 * pitch;
+    let mut out = vec![0f64; bands * stride];
+    for b in 0..bands {
+        let (b0, b1) = (b.saturating_sub(PHASE_WINDOW), (b + PHASE_WINDOW + 1).min(bands));
+        for i in 0..stride {
+            let (i0, i1) = (i.saturating_sub(PHASE_WINDOW), (i + PHASE_WINDOW + 1).min(stride));
+            let at = |bb: usize, ii: usize, k: usize| sums[bb * (stride + 1) + ii][k];
+            let total = |k: usize| at(b1, i1, k) - at(b0, i1, k) - at(b1, i0, k) + at(b0, i0, k);
+            let (c, s, wgt) = (total(0), total(1), total(2));
+            if wgt < min_weight || (c * c + s * s).sqrt() < PHASE_MIN_AGREEMENT * wgt {
+                continue;
+            }
+            let shift = crate::fmath::atan2(s as f32, c as f32) as f64 / turn;
+            if shift.abs() >= PHASE_MIN_SHIFT {
+                out[b * stride + i] = shift.round();
+            }
+        }
+    }
+    out
 }
 
 /// Fit elastic boundaries for `cols x rows` cells of `grid` over `src`.
@@ -310,6 +419,29 @@ pub fn fit(src: &RgbaImage, grid: SamplingGrid, cols: usize, rows: usize) -> Opt
         (a, b.max(a + 1).min(len))
     };
 
+    let phase_x = local_phase(
+        &|a, across| ex[across * w + a],
+        w,
+        h,
+        grid.origin_x,
+        grid.cell_w,
+        cols,
+        grid.origin_y,
+        grid.cell_h,
+        rows,
+    );
+    let phase_y = local_phase(
+        &|a, across| ey[a * w + across],
+        h,
+        w,
+        grid.origin_y,
+        grid.cell_h,
+        rows,
+        grid.origin_x,
+        grid.cell_w,
+        cols,
+    );
+
     let mut solver = Solver::default();
     let mut moved = 0;
     let mut xs = vec![0.0; rows * (cols + 1)];
@@ -329,6 +461,7 @@ pub fn fit(src: &RgbaImage, grid: SamplingGrid, cols: usize, rows: usize) -> Opt
             grid.origin_x,
             grid.cell_w,
             cols,
+            &phase_x[cy * (cols + 1)..(cy + 1) * (cols + 1)],
             &mut xs[cy * (cols + 1)..(cy + 1) * (cols + 1)],
         );
     }
@@ -351,6 +484,7 @@ pub fn fit(src: &RgbaImage, grid: SamplingGrid, cols: usize, rows: usize) -> Opt
             grid.origin_y,
             grid.cell_h,
             rows,
+            &phase_y[cx * (rows + 1)..(cx + 1) * (rows + 1)],
             &mut ys[cx * (rows + 1)..(cx + 1) * (rows + 1)],
         );
     }
@@ -414,6 +548,27 @@ mod tests {
                 b[0] == 21.0 && b[1] == 27.0
             });
             assert!(exact, "row {cy}");
+        }
+    }
+
+    #[test]
+    fn an_offset_region_keeps_its_offset_through_a_stretch_without_edges() {
+        // 12 x 12 cells of 6 px. Every art row is drawn 2 px above its
+        // lattice row (boundaries at 4, 10, 16, ...), and art rows 4..=8 are
+        // identical, so the boundaries between them have no edge to follow.
+        let colours = [[30u8, 30, 60], [220, 200, 90], [90, 160, 80], [200, 80, 70]];
+        let img = RgbaImage::from_fn(72, 72, |x, y| {
+            let row = (y + 2) / 6;
+            let row = if (4..=8).contains(&row) { 4 } else { row };
+            let c = colours[((x / 6) * 3 + row * 5) as usize % 4];
+            Rgba([c[0], c[1], c[2], 255])
+        });
+        let grid = fit(&img, lattice(6.0), 12, 12).unwrap();
+        for cx in 2..10 {
+            for cy in 2..11 {
+                let y0 = grid.bounds(cx, cy)[2];
+                assert_eq!(y0, cy as f64 * 6.0 - 2.0, "column {cx} row {cy}");
+            }
         }
     }
 

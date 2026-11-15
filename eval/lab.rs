@@ -21,7 +21,11 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("grid") => grid(&args[1..]),
         Some("turns") => turns(&args[1..]),
-        _ => eprintln!("usage: lab grid [--all] [--verbose] [FILTER]"),
+        Some("elastic") => elastic(&args[1..]),
+        _ => eprintln!(
+            "usage: lab grid [--all] [--verbose] [FILTER]
+       lab elastic IMAGE ORIGIN_X ORIGIN_Y PITCH COLS ROWS CX0 CX1 CY0 CY1"
+        ),
     }
 }
 
@@ -148,5 +152,43 @@ fn grid(args: &[String]) {
                 "{path:44} {w}x{h} -> no grid (R {coherence:.3} z {significance:.1}) ({ms:.0} ms)"
             ),
         }
+    }
+}
+
+/// Elastic cell bounds over a window of cells: row boundaries (y0) per
+/// column, then column boundaries (x0) per row, as offsets from the lattice.
+fn elastic(args: &[String]) {
+    let f = |i: usize| args[i].parse::<f64>().expect("number");
+    let u = |i: usize| args[i].parse::<usize>().expect("integer");
+    let src = image_io::load_rgba_from_path(Path::new(&args[0])).expect("image");
+    let (ox, oy, p) = (f(1), f(2), f(3));
+    let grid = raster_to_pixel::downsample::SamplingGrid { origin_x: ox, origin_y: oy, cell_w: p, cell_h: p };
+    let (cols, rows, cx0, cx1, cy0, cy1) = (u(4), u(5), u(6), u(7), u(8), u(9));
+    let Some(g) = raster_to_pixel::elastic::fit(&src, grid, cols, rows) else {
+        println!("elastic grid not fitted");
+        return;
+    };
+    if std::env::var("LAB_BOUNDS").is_ok() {
+        for cy in cy0..cy1 {
+            for cx in cx0..cx1 {
+                let b = g.bounds(cx, cy);
+                println!("{cx} {cy} {} {} {} {}", b[0], b[1], b[2], b[3]);
+            }
+        }
+        return;
+    }
+    println!("row boundary y0 - lattice, per column {cx0}..{cx1} (rows down)");
+    for cy in cy0..cy1 {
+        let line: Vec<String> = (cx0..cx1)
+            .map(|cx| format!("{:+.0}", g.bounds(cx, cy)[2] - (oy + cy as f64 * p)))
+            .collect();
+        println!("row {cy:3}: {}", line.join(" "));
+    }
+    println!("column boundary x0 - lattice, per row {cy0}..{cy1} (columns across)");
+    for cy in cy0..cy1 {
+        let line: Vec<String> = (cx0..cx1)
+            .map(|cx| format!("{:+.0}", g.bounds(cx, cy)[0] - (ox + cx as f64 * p)))
+            .collect();
+        println!("row {cy:3}: {}", line.join(" "));
     }
 }

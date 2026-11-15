@@ -251,23 +251,24 @@ Goal: help with the last annoying artifacts without making the default destructi
 - GUI does not expose `--phase-x`/`--phase-y` yet (the server already parses
   `phaseX`/`phaseY` form fields).
 
-## Next engine step: 1-px lines (researched 2026-11-15)
+## 1-px lines on drifted art (experiment 2026-11-15, branch engine/thin-lines)
 
-Symptom: on drifted generated art (border_5 scarab) 1-px outlines lose a pixel or double.
-Cause: Smart cells weight pixels toward the cell centre; a line on a cell boundary is weak in
-both cells (lost), a line 1-1.5 cells wide covers both centres (doubled). Each cell decides alone.
-- Ridge claim (Shilo/pixilate `prototype/src/lib/core/resample.ts` `ridges()`, MIT, credit in
-  NOTICE): dark and light top-hat of Oklab L (radius ~0.75 cell), averaged per cell; the cell
-  that is the strict maximum across the line (x or y) above a threshold takes the line colour,
-  its neighbours across the line leave line pixels out. One cell per crossing. pixilate only
-  uses it on its no-grid resize path, unblinded evidence: treat as an experiment.
-- Gap bridging (same file, `BRIDGE = 0.15`): a cell between two cells of one thin feature
-  with >= 15% coverage of it joins the line.
-- Dark colour drift: pixilate uses toe-corrected lightness (Okhsl `L_r`) for palette
-  distances; a noisy black outline gave 3 dark entries in raw Oklab, 1 with the toe.
-- Wire GUI "Protect 1px details" to the ridge claim: today it only exempts pixels from
-  cleanup (off by default), and Outline Repair/Enforce only works on transparent sprites.
-- Gate: synthetic eval neutral; view scarab, START, castle, alch by eye.
+Found: the border_5 scarab is drawn 2 px (0.4 cell) above the global lattice. Elastic row
+boundaries followed it where it has horizontal edges, but in a stretch of identical rows they
+drifted back to the lattice, so cells straddled two art rows: lost and doubled leg pixels.
+- KEPT, local phase anchor (`elastic::local_phase`): every edge votes with its lattice phase,
+  the circular mean over 9x9 cells around a boundary becomes its home when coherent and >= 1 px
+  off. Scarab: 24 -> 1 cell off its own grid (region incl. frame 65 -> 39). Synthetic eval
+  identical (389/389). Real images visibly unchanged elsewhere (pumpkin, star, alch, START).
+  Runtime +7%. Debug: `cargo run --release --example lab -- elastic IMAGE ...`.
+- SHELVED, pixilate-style thin-line claim (one cell per crossing, top-hat masks): unsafe on
+  blurred sources (spill reads as line), neutral once gated to elastic + contrast gate with
+  toe-corrected lightness, but no measurable gain on scarab/START and +25% runtime. Code kept
+  in `eval_out/experiments/thinline.{rs,patch}` (gitignored). Lesson: the errors were geometry
+  (grid phase), not cell colour picks.
+- Still open: "Protect 1px details" only exempts pixels from cleanup (off by default); Outline
+  Repair/Enforce only work on transparent sprites. Rename or hide them for opaque images.
+- START remaining errors are shading tones in the yellow gradient, not geometry.
 
 ## Later
 
