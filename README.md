@@ -32,7 +32,7 @@ so a smaller region reduces processing work; the full file is still decoded on l
 
 ![Pixeline GUI in light mode](screenshots/light_mode.png)
 
-## v1, v2 and v3
+## v1 to v4
 
 Closeups from three test images. Each image was converted whole with the default Auto
 settings, then cropped on whole output pixels and enlarged without smoothing.
@@ -44,10 +44,14 @@ settings, then cropped on whole output pixels and enlarged without smoothing.
   pixel grid, which saves thin outlines, lettering and small ornaments. It also keeps
   small, distinct colors in busy scenes. If an image looks distorted, turn off
   **Elastic grid** in the GUI or pass `--no-elastic`.
+- **v4** lets the elastic grid follow art drawn on its own offset grid. It measures how far
+  the art around each cell sits from the main grid and keeps that offset, even across rows
+  with no edges to follow. On the pumpkin and the lettering below it looks the same as v3.
 
-Thin outlines: the elastic grid keeps the scarab's one-pixel legs and outline.
+Thin outlines: the scarab is drawn 2 px off the frame's grid. The v4 cell grid (pink)
+follows it, so each one-pixel leg lands in a cell of its own.
 
-![Scarab closeup: source, v1, v2, v3](screenshots/compare_scarab.png)
+![Scarab closeup: source, v1, the v4 cell grid over the source, v4](screenshots/compare_scarab.png)
 
 Vines: v1 picks a 5 px grid; v2 and v3 find the real 3.58 px one.
 
