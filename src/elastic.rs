@@ -69,6 +69,9 @@ const PHASE_MIN_AGREEMENT: f64 = 0.5;
 const PHASE_MIN_EDGES: f64 = 4.0;
 /// A local phase nearer the lattice than this (pixels) is the lattice.
 const PHASE_MIN_SHIFT: f64 = 0.75;
+/// Farthest a local phase may be read from the lattice, in cells, when
+/// choosing between its two readings near half a cell.
+const PHASE_UNWRAP: f64 = 0.75;
 
 /// Per-band cell boundaries in source pixels.
 #[derive(Clone, Debug)]
@@ -357,6 +360,8 @@ fn local_phase(
         }
     }
     let min_weight = PHASE_MIN_EDGES * 255.0 * pitch;
+    // Unwrapped shifts (None: no coherent phase there).
+    let mut shifts: Vec<Option<f64>> = vec![None; bands * stride];
     let mut out = vec![0f64; bands * stride];
     for b in 0..bands {
         let (b0, b1) = (b.saturating_sub(PHASE_WINDOW), (b + PHASE_WINDOW + 1).min(bands));
@@ -368,7 +373,28 @@ fn local_phase(
             if wgt < min_weight || (c * c + s * s).sqrt() < PHASE_MIN_AGREEMENT * wgt {
                 continue;
             }
-            let shift = crate::fmath::atan2(s as f32, c as f32) as f64 / turn;
+            // A phase is only known up to a whole cell. Near half a cell the
+            // two readings (+2.48 px or -2.52 px) are the same art, but they
+            // put it one cell apart; neighbouring boundaries that read it
+            // differently split an art row between them. So take the reading
+            // nearest the neighbour already decided (the same boundary in the
+            // previous band, else the previous boundary in this band) while
+            // it stays within `PHASE_UNWRAP` of the lattice.
+            let raw = crate::fmath::atan2(s as f32, c as f32) as f64 / turn;
+            let reference = (b > 0)
+                .then(|| shifts[(b - 1) * stride + i])
+                .flatten()
+                .or_else(|| (i > 0).then(|| shifts[b * stride + i - 1]).flatten())
+                .unwrap_or(0.0);
+            let mut shift = raw;
+            for candidate in [raw - pitch, raw + pitch] {
+                if candidate.abs() <= PHASE_UNWRAP * pitch
+                    && (candidate - reference).abs() < (shift - reference).abs()
+                {
+                    shift = candidate;
+                }
+            }
+            shifts[b * stride + i] = Some(shift);
             if shift.abs() >= PHASE_MIN_SHIFT {
                 out[b * stride + i] = shift.round();
             }
