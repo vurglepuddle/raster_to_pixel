@@ -258,7 +258,7 @@ boundaries followed it where it has horizontal edges, but in a stretch of identi
 drifted back to the lattice, so cells straddled two art rows: lost and doubled leg pixels.
 - KEPT, local phase anchor (`elastic::local_phase`): every edge votes with its lattice phase,
   the circular mean over 9x9 cells around a boundary becomes its home when coherent and >= 1 px
-  off. Scarab: 24 -> 1 cell off its own grid (region incl. frame 65 -> 39). Synthetic eval
+  off. Scarab: 24 -> 0 cells off its own grid (after phase unwrapping: near half a cell the two readings must agree between neighbouring columns). Synthetic eval
   identical (389/389). Real images visibly unchanged elsewhere (pumpkin, star, alch, START).
   Runtime +7%. Debug: `cargo run --release --example lab -- elastic IMAGE ...`.
 - SHELVED, pixilate-style thin-line claim (one cell per crossing, top-hat masks): unsafe on
